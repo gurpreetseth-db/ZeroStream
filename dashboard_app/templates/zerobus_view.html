@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Zerobus — Raw Stream Data</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260226b"/>
+</head>
+<body class="zerobus-page">
+
+<!-- ══════════════════════════════════════════════════════ TOP BAR ══ -->
+<header class="topbar zerobus-topbar">
+  <div class="topbar-left">
+    <button class="btn-back-blue" onclick="window.location.href='/'">← Back</button>
+  </div>
+
+  <div class="topbar-center">
+    <span class="brand-zerobus">∿ Zerobus</span>
+    <span class="version-tag">v1.11</span>
+  </div>
+
+  <div class="topbar-right">
+    <button class="btn-lakebase" onclick="window.location.href='/'">
+      <span class="btn-icon">☰</span>
+      SHOW MAP SERVED BY LAKEBASE
+    </button>
+    <div class="loading-indicator" id="loadingIndicator">
+      <span class="loading-spinner-sm"></span>
+      <span>Loading...</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════ STATS BAR ══ -->
+<div class="stats-bar">
+  <div class="stat-item">
+    <span class="stat-label">TOTAL EVENTS</span>
+    <span class="stat-value" id="statTotalEvents">0</span>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat-item">
+    <span class="stat-label">LAST UPDATED</span>
+    <span class="stat-value" id="statLastUpdated">--:--:--</span>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat-item stat-right">
+    <span class="stat-label">ACCESS TIME</span>
+    <span class="stat-value" id="statAccessTime">— ms</span>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ DATA TABLE ══ -->
+<div class="table-wrapper">
+  <table class="data-table" id="dataTable">
+    <thead>
+      <tr>
+        <th class="col-client">CLIENT ID</th>
+        <th class="col-timestamp">TIMESTAMP</th>
+        <th class="col-heading">HEADING</th>
+        <th class="col-pitch">PITCH</th>
+        <th class="col-roll">ROLL</th>
+        <th class="col-lat">LATITUDE</th>
+        <th class="col-lon">LONGITUDE</th>
+      </tr>
+    </thead>
+    <tbody id="dataTableBody">
+      <tr class="loading-row">
+        <td colspan="7">
+          <div class="table-loading">
+            <div class="spinner"></div>
+            <span>Loading stream data…</span>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script src="/static/js/zerobus_view.js?v=20260226b"></script>
+</body>
+</html>

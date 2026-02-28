@@ -1,0 +1,27 @@
+# ── Web Framework ──────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+jinja2==3.1.4
+aiofiles==23.2.1
+
+# ── Databricks ─────────────────────────────────────────────────────────────────
+databricks-sdk==0.27.1
+
+# ── PostgreSQL drivers ─────────────────────────────────────────────────────────
+asyncpg==0.29.0
+pg8000==1.31.1
+
+# ── ORM ────────────────────────────────────────────────────────────────────────
+sqlalchemy>=2.0.47
+
+# ── HTTP ───────────────────────────────────────────────────────────────────────
+httpx==0.27.0
+aiohttp==3.9.5
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Pydantic - use pre-built binary ONLY, never build from source ──────────────
+# pydantic-core requires Rust - must use pre-built wheel
+# Do NOT add pydantic here - handled by install script with --only-binary flag

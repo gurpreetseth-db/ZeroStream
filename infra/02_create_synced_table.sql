@@ -1,0 +1,25 @@
+-- =============================================================================
+-- Lakebase Synced Tables - NOTE
+-- =============================================================================
+-- 
+-- Synced tables CANNOT be created via SQL DDL.
+-- They must be created using the Databricks REST API or SDK.
+--
+-- Use the Python script instead:
+--   python3 infra/create_synced_table.py
+--
+-- API Documentation:
+--   POST /api/2.0/database/synced-database-tables
+--
+-- The synced table will automatically sync data from the Delta table
+-- to the Lakebase PostgreSQL database using a DLT pipeline internally.
+--
+-- Required environment variables:
+--   - CATALOG: Unity Catalog name
+--   - SCHEMA: Schema name  
+--   - TABLE_NAME: Source Delta table name
+--   - LAKEBASE_INSTANCE: Lakebase instance name
+--   - LAKEBASE_DATABASES: Target database name
+--   - LAKEBASE_SCHEMA: Target schema (default: public)
+--
+-- =============================================================================

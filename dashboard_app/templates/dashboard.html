@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Lakebase — ZeroStream Dashboard</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css"/>
+  <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260226"/>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════ TOP BAR ══ -->
+<header class="topbar">
+  <div class="topbar-left">
+    <button class="btn-back" id="btnBack" onclick="history.back()">← Back</button>
+    <div class="map-toggle">
+      <button class="toggle-btn active" id="btnSatellite" onclick="Dashboard.setMapLayer('satellite')">Satellite</button>
+    </div>
+  </div>
+
+  <div class="topbar-center">
+    <span class="brand">⚡ Lakebase</span>
+  </div>
+
+  <div class="topbar-right">
+    <button class="btn-zerobus" onclick="window.location.href='/zerobus'">
+      <span class="btn-icon">☰</span>
+      SHOW DATA SERVED BY ZEROBUS
+    </button>
+    <button class="btn-settings">⚙</button>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════ KPI BAR ══ -->
+<div class="kpi-bar">
+  <div class="kpi-item">
+    <span class="kpi-label">TOTAL SENSOR EVENTS</span>
+    <span class="kpi-value green" id="kpiTotalEvents">0</span>
+  </div>
+  <div class="kpi-divider"></div>
+  <div class="kpi-item">
+    <span class="kpi-label">UNIQUE CLIENTS</span>
+    <span class="kpi-value" id="kpiUniqueClients">0</span>
+  </div>
+  <div class="kpi-divider"></div>
+  <div class="kpi-item">
+    <span class="kpi-label">DATA INGESTED</span>
+    <span class="kpi-value" id="kpiDataIngested">0 MB</span>
+  </div>
+  <div class="kpi-divider"></div>
+  <div class="kpi-item kpi-right">
+    <div class="kpi-row">
+      <span class="kpi-label-sm">DISPLAY UPDATED</span>
+      <span class="kpi-value-sm red" id="kpiDisplayUpdated">--:--:--</span>
+    </div>
+    <div class="kpi-row">
+      <span class="kpi-label-sm">LAST DATA</span>
+      <span class="kpi-value-sm" id="kpiLastData">--:--:--</span>
+    </div>
+    <div class="kpi-row">
+      <span class="kpi-label-sm">ACCESS TIME</span>
+      <span class="kpi-value-sm" id="kpiAccessTime">— ms</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════ MAIN CONTENT ══ -->
+<div class="main-content">
+  
+  <!-- World Map -->
+  <div class="map-container">
+    <div id="worldMap" class="world-map"></div>
+  </div>
+
+  <!-- Connected Clients Sidebar -->
+  <aside class="clients-sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-icon">👥</span>
+      <span class="sidebar-title">Connected Clients</span>
+    </div>
+    <div class="clients-list" id="clientsList">
+      <div class="clients-loading">
+        <div class="spinner"></div>
+        <span>Loading clients…</span>
+      </div>
+    </div>
+    
+    <!-- Client Detail Panel (shown when client clicked) -->
+    <div class="client-detail-panel" id="clientDetailPanel" style="display:none;">
+      <div class="detail-header">
+        <button class="btn-close-detail" id="btnCloseDetail">×</button>
+        <h3 id="detailDeviceName">Device</h3>
+        <span class="detail-status" id="detailStatus">Active</span>
+      </div>
+      <div class="detail-stats">
+        <div class="stat-row">
+          <span class="stat-label">Total Events</span>
+          <span class="stat-value" id="detailTotalEvents">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Data Ingested</span>
+          <span class="stat-value" id="detailDataIngested">0 KB</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">First Seen</span>
+          <span class="stat-value" id="detailFirstSeen">--</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Last Seen</span>
+          <span class="stat-value" id="detailLastSeen">--</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Avg Speed</span>
+          <span class="stat-value" id="detailAvgSpeed">0 km/h</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Avg Battery</span>
+          <span class="stat-value" id="detailAvgBattery">0%</span>
+        </div>
+      </div>
+      <div class="detail-location">
+        <h4>Latest Position</h4>
+        <div class="location-coords" id="detailCoords">--</div>
+      </div>
+      <div class="detail-track-info">
+        <span id="detailTrackPoints">0 track points drawn</span>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<script src="/static/js/dashboard.js?v=20260226b"></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+# Makes config a proper Python package

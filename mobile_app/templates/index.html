@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ZeroStream — Device Simulator</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+
+  <link rel="stylesheet" href="/static/css/styles.css"/>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════ TOP BAR ══ -->
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="topbar-logo">⚡ ZeroStream</span>
+    <span class="topbar-sub" id="deviceId">Device Simulator</span>
+  </div>
+
+  <div class="topbar-center">
+    <button class="btn-stream" id="btnStream" onclick="App.toggleStreaming()">
+      <span class="btn-icon">▶</span>
+      <span class="btn-text">Start</span>
+    </button>
+    <div class="stream-indicator" id="streamIndicator">
+      <span class="pulse-dot"></span>
+      <span class="stream-text">Streaming</span>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="stat-chip">
+      <span class="stat-label">PUBLISHED</span>
+      <span class="stat-value" id="publishedCount">0</span>
+    </div>
+    <button class="settings-btn" title="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════ MAIN LAYOUT ══ -->
+<div class="main-layout">
+
+  <!-- ── Device List (LEFT) ─────────────────────────────────────────── -->
+  <aside class="device-sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-icon">📱</span>
+      <span class="sidebar-title">Simulated Devices</span>
+      <span class="sidebar-count" id="deviceCount">0</span>
+    </div>
+
+    <!-- Slider to add connections -->
+    <div class="slider-section">
+      <label class="slider-label">Number of Devices</label>
+      <div class="slider-row">
+        <input type="range" id="connectionSlider" min="1" max="100" value="3" class="slider"/>
+        <span class="slider-value" id="sliderValue">3</span>
+      </div>
+      <button class="btn-add" onclick="App.applyConnectionCount()">Apply</button>
+    </div>
+
+    <div class="device-list" id="deviceList">
+      <div class="device-list-empty">
+        <div class="empty-icon">📡</div>
+        <div>Click "Apply" to create devices</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Device Detail View (RIGHT) ─────────────────────────────────── -->
+  <main class="device-detail" id="deviceDetail">
+    
+    <!-- Empty state -->
+    <div class="detail-empty" id="detailEmpty">
+      <div class="empty-state-icon">👈</div>
+      <h2>Select a Device</h2>
+      <p>Choose a device from the list to view live sensor data</p>
+    </div>
+
+    <!-- Device detail content -->
+    <div class="detail-content" id="detailContent" style="display: none;">
+      
+      <!-- Device header -->
+      <div class="detail-header">
+        <div class="device-info">
+          <h1 class="device-name" id="selectedDeviceName">Device Name</h1>
+          <div class="device-meta">
+            <span class="device-id" id="selectedDeviceId">connection-id</span>
+            <span class="device-status active" id="selectedDeviceStatus">● Streaming</span>
+          </div>
+        </div>
+        <div class="device-stats">
+          <div class="stat-item">
+            <span class="stat-label">BATTERY</span>
+            <span class="stat-value" id="selectedBattery">100%</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">SIGNAL</span>
+            <span class="stat-value" id="selectedSignal">—</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">SPEED</span>
+            <span class="stat-value" id="selectedSpeed">0 km/h</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-column sensor layout -->
+      <div class="sensor-grid">
+        
+        <!-- Left column: Orientation sensors -->
+        <div class="sensor-column">
+          
+          <!-- Pitch & Roll -->
+          <div class="sensor-card">
+            <div class="sensor-row">
+              <div class="gauge-section">
+                <div class="gauge-label">PITCH</div>
+                <div class="pitch-gauge">
+                  <div class="pitch-bar" id="pitchBar"></div>
+                  <div class="pitch-center"></div>
+                </div>
+                <div class="gauge-value" id="pitchValue">+0.0°</div>
+              </div>
+              <div class="gauge-section">
+                <div class="gauge-label">ROLL</div>
+                <div class="roll-gauge">
+                  <div class="roll-bar" id="rollBar"></div>
+                  <div class="roll-center"></div>
+                </div>
+                <div class="gauge-value" id="rollValue">+0.0°</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Heading Compass -->
+          <div class="sensor-card">
+            <div class="gauge-label">HEADING</div>
+            <div class="compass-container">
+              <div class="compass">
+                <div class="compass-ring">
+                  <span class="compass-label n">N</span>
+                  <span class="compass-label e">E</span>
+                  <span class="compass-label s">S</span>
+                  <span class="compass-label w">W</span>
+                </div>
+                <div class="compass-pointer" id="compassPointer"></div>
+                <div class="compass-center"></div>
+              </div>
+              <div class="heading-value" id="headingValue">0°</div>
+            </div>
+          </div>
+
+          <!-- Acceleration -->
+          <div class="sensor-card">
+            <div class="sensor-section-title">Acceleration (m/s²)</div>
+            <div class="accel-grid">
+              <div class="accel-item">
+                <span class="accel-axis">X</span>
+                <span class="accel-value" id="accelX">0.00</span>
+              </div>
+              <div class="accel-item">
+                <span class="accel-axis">Y</span>
+                <span class="accel-value" id="accelY">0.00</span>
+              </div>
+              <div class="accel-item">
+                <span class="accel-axis">Z</span>
+                <span class="accel-value" id="accelZ">0.00</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Gyroscope -->
+          <div class="sensor-card">
+            <div class="sensor-section-title">Rotation (°/s)</div>
+            <div class="gyro-grid">
+              <div class="gyro-item">
+                <span class="gyro-axis">ALPHA</span>
+                <span class="gyro-value" id="gyroAlpha">0.00</span>
+              </div>
+              <div class="gyro-item">
+                <span class="gyro-axis">BETA</span>
+                <span class="gyro-value" id="gyroBeta">0.00</span>
+              </div>
+              <div class="gyro-item">
+                <span class="gyro-axis">GAMMA</span>
+                <span class="gyro-value" id="gyroGamma">0.00</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right column: Map & Location -->
+        <div class="sensor-column map-column">
+          
+          <!-- Location Info -->
+          <div class="location-info">
+            <span class="location-coords" id="locationCoords">Lat 0.00, Lon 0.00</span>
+            <span class="location-sep">|</span>
+            <span class="location-alt" id="locationAlt">ALT 0m</span>
+            <span class="location-sep">|</span>
+            <span class="location-acc">ACC 0m</span>
+          </div>
+
+          <!-- Map -->
+          <div class="device-map-container">
+            <div id="deviceMap" class="device-map"></div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
