@@ -35,6 +35,7 @@ from lakebase_client import (
     get_client_list as lb_get_client_list,
     get_all_latest_locations as lb_get_all_latest_locations,
     get_client_track as lb_get_client_track,
+    get_client_detail as lb_get_client_detail,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -91,12 +92,12 @@ async def lifespan(app: FastAPI):
     if missing:
         logger.warning(f"Missing config: {missing}")
 
-    # Test Delta connection by getting summary
+    # Test Lakebase connection
     try:
-        summary = get_dashboard_summary()
-        logger.info(f"✅ Delta connection ready - {summary.get('total_events', 0)} events")
+        summary = await lb_get_dashboard_summary()
+        logger.info(f"✅ Lakebase connection ready - {summary.get('total_events', 0)} events")
     except Exception as e:
-        logger.error(f"❌ Delta connection failed: {e}")
+        logger.warning(f"⚠️ Lakebase connection not ready yet (will retry on first request): {e}")
 
     broadcast_task = asyncio.create_task(_dashboard_broadcast_loop())
     yield
@@ -210,66 +211,10 @@ async def api_client_summary(
 ):
     """Get detailed summary for a specific client including track (Lakebase)."""
     try:
-        # Compose summary from Lakebase
-        # Get all events for this client (for summary)
-        sql = f"""
-            SELECT 
-                connection_id,
-                FIRST(device_name) as device_name,
-                COUNT(*) as total_events,
-                COALESCE(SUM(payload_bytes), 0) as total_bytes,
-                MAX(event_timestamp) as last_event,
-                MIN(event_timestamp) as first_event,
-                AVG(speed_kmh) as avg_speed,
-                AVG(battery_pct) as avg_battery
-            FROM {lakebase_cfg.catalog}.{lakebase_cfg.schema}.sensor_stream_synced
-            WHERE connection_id = $1
-        """
-        rows = await lakebase_client.fetch_rows(sql, connection_id)
-        if not rows or rows[0].get("total_events", 0) == 0:
+        data = await lb_get_client_detail(connection_id, include_track, track_limit)
+        if data is None:
             raise HTTPException(status_code=404, detail="Client not found")
-        row = rows[0]
-        logger.error(f"DEBUG: row values for summary: {row}")
-        logger.error(f"DEBUG: types: total_events={type(row.get('total_events'))}, total_bytes={type(row.get('total_bytes'))}")
-        summary = {
-            "connection_id": row.get("connection_id"),
-            "device_name": row.get("device_name"),
-            "total_events": safe_int(row.get("total_events")),
-            "total_bytes": safe_int(row.get("total_bytes")),
-            "last_event": row.get("last_event"),
-            "first_event": row.get("first_event"),
-            "avg_speed": float(row.get("avg_speed") or 0),
-            "avg_battery": float(row.get("avg_battery") or 0),
-        }
-        # Get latest location
-        loc_sql = f"""
-            SELECT latitude, longitude FROM {lakebase_cfg.catalog}.{lakebase_cfg.schema}.sensor_stream_synced
-            WHERE connection_id = $1 AND latitude IS NOT NULL AND longitude IS NOT NULL
-            ORDER BY event_timestamp DESC LIMIT 1
-        """
-        loc_rows = await lakebase_client.fetch_rows(loc_sql, connection_id)
-        if loc_rows:
-            summary["latest"] = {
-                "latitude": float(loc_rows[0].get("latitude")),
-                "longitude": float(loc_rows[0].get("longitude")),
-            }
-        result = {"summary": summary}
-        if include_track:
-            track = await lb_get_client_track(connection_id, track_limit)
-            # Convert to JS-compatible format
-            track_js = [
-                {
-                    "lat": float(p.get("latitude", 0)),
-                    "lon": float(p.get("longitude", 0)),
-                    "event_time": p.get("event_timestamp"),
-                    "speed_kmh": float(p.get("speed_kmh", 0)),
-                    "heading_deg": float(p.get("heading_deg", 0)),
-                }
-                for p in track if p.get("latitude") and p.get("longitude")
-            ]
-            result["track"] = track_js
-            result["track_count"] = len(track_js)
-        return result
+        return data
     except HTTPException:
         raise
     except Exception as e:

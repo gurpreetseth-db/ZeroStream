@@ -232,13 +232,21 @@ def main():
             print(f"❌ create_synced_table.py failed: {result.stderr}")
             sys.exit(result.returncode)
 
-
         # Register with catalog if instance was created/exists
         if instance_info.get("name") and instance_info.get("status") in ("created", "exists"):
             register_with_catalog(host, token, instance_info["name"])
-        
+
         # Save config
         save_config(instance_info)
+
+        # Create Lakebase service principal & OAuth credentials
+        #creds_script = os.path.join(os.path.dirname(__file__), "create_lakebase_credentials.py")
+        #print("\n▶ Running create_lakebase_credentials.py to set up OAuth access...")
+        #result = subprocess.run([sys.executable, creds_script], capture_output=True, text=True)
+        #print(result.stdout)
+        #if result.returncode != 0:
+        #    print(f"⚠️  create_lakebase_credentials.py had issues: {result.stderr}")
+        #    print("    Lakebase credentials may need to be set up manually.")
         
     except Exception as e:
         print(f"  ❌ Error: {e}", file=sys.stderr)

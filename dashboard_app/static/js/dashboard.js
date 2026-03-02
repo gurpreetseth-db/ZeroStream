@@ -12,6 +12,9 @@ const Dashboard = (() => {
   let ws = null;
   let currentLayer = 'satellite';
   let selectedClientId = null;
+  let currentTrackData = [];      // Full track data for selected client
+  let selectedPointIndex = null;  // Currently selected track point index
+  let selectedPointRing = null;   // Highlight ring around selected point
 
   // DOM helpers
   const $ = (sel) => document.querySelector(sel);
@@ -311,6 +314,9 @@ const Dashboard = (() => {
     // Show loading state
     const panel = $('#clientDetailPanel');
     panel.style.display = 'block';
+    $('#mainContent').classList.add('client-selected');
+    // Let Leaflet know the map container changed size
+    setTimeout(() => map.invalidateSize({ animate: true }), 50);
     $('#detailDeviceName').textContent = 'Loading...';
     
     // Fetch client details
@@ -343,15 +349,6 @@ const Dashboard = (() => {
     $('#detailLastSeen').textContent = s.last_event 
       ? formatRelativeTime(new Date(s.last_event))
       : '--';
-    
-    $('#detailAvgSpeed').textContent = `${s.avg_speed || 0} km/h`;
-    $('#detailAvgBattery').textContent = `${s.avg_battery || 0}%`;
-    
-    if (s.latest && s.latest.latitude && s.latest.longitude) {
-      $('#detailCoords').textContent = `${s.latest.latitude.toFixed(5)}, ${s.latest.longitude.toFixed(5)}`;
-    } else {
-      $('#detailCoords').textContent = 'No location data';
-    }
 
     // Draw track on map and zoom to client location
     if (data.track && data.track.length > 0) {
@@ -380,6 +377,8 @@ const Dashboard = (() => {
 
   function drawClientTrack(track, latest) {
     clearClientTrack();
+    currentTrackData = track;  // Store for point click lookup
+    selectedPointIndex = null;
     
     // Handle both 'lon' and 'lng' field names for compatibility
     const points = track
@@ -389,7 +388,6 @@ const Dashboard = (() => {
     console.log(`Drawing track with ${points.length} points`, points.slice(0, 3));
     
     if (points.length === 0) {
-      // If no track but we have latest position, zoom to it
       if (latest && (latest.latitude || latest.lat)) {
         const lat = latest.latitude || latest.lat;
         const lng = latest.longitude || latest.lng || latest.lon;
@@ -408,14 +406,12 @@ const Dashboard = (() => {
       pane: 'trackPane'
     }).addTo(map);
 
-    // Draw a blob (circle) for each track point
+    // Draw a blob (circle) for each track point — clickable
     const totalPoints = points.length;
     points.forEach((point, index) => {
-      // Color gradient from blue (oldest) to red (newest)
       const progress = index / Math.max(totalPoints - 1, 1);
-      const radius = 4 + (progress * 4); // Grows from 4 to 8
+      const radius = 4 + (progress * 4);
       
-      // Interpolate color from blue (#3b82f6) to red (#ef4444)
       const r = Math.round(59 + progress * (239 - 59));
       const g = Math.round(130 + progress * (68 - 130));
       const b = Math.round(246 + progress * (68 - 246));
@@ -430,16 +426,18 @@ const Dashboard = (() => {
         pane: 'trackMarkerPane'
       }).addTo(map);
       
-      // Add tooltip with point number
-      blob.bindTooltip(`Point ${index + 1} of ${totalPoints}`, {
+      blob.bindTooltip(`Point ${index + 1} of ${totalPoints} — click to inspect`, {
         permanent: false,
         direction: 'top'
       });
       
+      // Click handler — show this point's data in the detail panel
+      blob.on('click', () => selectTrackPoint(index));
+      
       trackMarkers.push(blob);
     });
 
-    // START marker - larger green circle with "S" label (on top)
+    // START marker
     const startIcon = L.divIcon({
       className: 'track-start-marker',
       html: '<div class="start-marker">S</div>',
@@ -447,10 +445,10 @@ const Dashboard = (() => {
       iconAnchor: [14, 14]
     });
     const startMarker = L.marker(points[0], { icon: startIcon, pane: 'trackMarkerPane', zIndexOffset: 1000 }).addTo(map);
-    startMarker.bindPopup('<b>Start Position</b><br>First recorded location');
+    startMarker.on('click', () => selectTrackPoint(0));
     trackMarkers.push(startMarker);
 
-    // END marker - larger red circle with "E" label (current position, on top)
+    // END marker
     const endIcon = L.divIcon({
       className: 'track-end-marker',
       html: '<div class="end-marker">E</div>',
@@ -459,30 +457,119 @@ const Dashboard = (() => {
     });
     const lastPoint = points[points.length - 1];
     const endMarker = L.marker(lastPoint, { icon: endIcon, pane: 'trackMarkerPane', zIndexOffset: 2000 }).addTo(map);
-    endMarker.bindPopup('<b>Current Position</b><br>Most recent location');
+    endMarker.on('click', () => selectTrackPoint(points.length - 1));
     trackMarkers.push(endMarker);
 
-    // Zoom to fit the entire track with padding
-    map.fitBounds(clientTrack.getBounds(), { 
-      padding: [100, 100], 
-      maxZoom: 17,
-      animate: true
-    });
+    // Zoom to fit
+    map.invalidateSize({ animate: false });
+    setTimeout(() => {
+      map.fitBounds(clientTrack.getBounds(), { 
+        padding: [60, 60], 
+        maxZoom: 17,
+        animate: true
+      });
+    }, 100);
     
-    console.log(`✅ Track drawn: ${points.length} points with blobs, start:`, points[0], 'end:', lastPoint);
+    // Show summary in left stats area initially
+    showClientSummaryInStats();
+    
+    console.log(`✅ Track drawn: ${points.length} clickable points, start:`, points[0], 'end:', lastPoint);
+  }
+
+  // ── Point selection ─────────────────────────────────────────────────────
+  function selectTrackPoint(index) {
+    if (index < 0 || index >= currentTrackData.length) return;
+    selectedPointIndex = index;
+    const pt = currentTrackData[index];
+    const total = currentTrackData.length;
+    
+    // Update point badge
+    $('#detailPointBadge').style.display = 'inline';
+    $('#detailPointNum').textContent = index + 1;
+    $('#detailPointTotal').textContent = total;
+    
+    // Update left stats with point-level data
+    const ts = pt.event_time
+      ? new Date(pt.event_time).toLocaleString('en-GB', {
+          day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', second:'2-digit'
+        })
+      : '--';
+    $('#detailTimestamp').textContent = ts;
+    $('#detailLat').textContent = pt.lat ? pt.lat.toFixed(6) : '--';
+    $('#detailLng').textContent = (pt.lon || pt.lng) ? (pt.lon || pt.lng).toFixed(6) : '--';
+    $('#detailSpeed').textContent = `${(pt.speed_kmh || 0).toFixed(1)} km/h`;
+    $('#detailHeading').textContent = `${(pt.heading_deg || 0).toFixed(0)}°`;
+    $('#detailBattery').textContent = `${pt.battery_pct || 0}%`;
+    
+    // Hide the hint
+    const hint = $('#pointHint');
+    if (hint) hint.style.display = 'none';
+    
+    // Highlight selected point on map
+    highlightPoint(index);
+    
+    console.log(`📍 Selected point ${index + 1}/${total}:`, pt);
+  }
+
+  function highlightPoint(index) {
+    // Remove old highlight
+    if (selectedPointRing) {
+      map.removeLayer(selectedPointRing);
+      selectedPointRing = null;
+    }
+    
+    const pt = currentTrackData[index];
+    if (!pt) return;
+    const lat = pt.lat;
+    const lng = pt.lon || pt.lng;
+    if (!lat || !lng) return;
+
+    // Draw a bright ring around selected point
+    selectedPointRing = L.circleMarker([lat, lng], {
+      radius: 14,
+      fillColor: 'transparent',
+      fillOpacity: 0,
+      color: '#3b82f6',
+      weight: 3,
+      opacity: 1,
+      pane: 'trackMarkerPane',
+      className: 'selected-point-ring'
+    }).addTo(map);
+    
+    // Pan map to the point smoothly
+    map.panTo([lat, lng], { animate: true, duration: 0.4 });
+  }
+
+  function showClientSummaryInStats() {
+    // Show placeholder prompting user to click a point
+    $('#detailTimestamp').textContent = '--';
+    $('#detailLat').textContent = '--';
+    $('#detailLng').textContent = '--';
+    $('#detailSpeed').textContent = '--';
+    $('#detailHeading').textContent = '--';
+    $('#detailBattery').textContent = '--';
+    $('#detailPointBadge').style.display = 'none';
+    const hint = $('#pointHint');
+    if (hint) hint.style.display = 'block';
   }
 
   function clearClientTrack() {
     if (clientTrack) { map.removeLayer(clientTrack); clientTrack = null; }
     trackMarkers.forEach(m => map.removeLayer(m));
     trackMarkers = [];
+    currentTrackData = [];
+    selectedPointIndex = null;
+    if (selectedPointRing) { map.removeLayer(selectedPointRing); selectedPointRing = null; }
   }
 
   function closeDetailPanel() {
     selectedClientId = null;
     $('#clientDetailPanel').style.display = 'none';
+    $('#mainContent').classList.remove('client-selected');
     clearClientTrack();
     $$('.client-card').forEach(card => card.classList.remove('selected'));
+    // Re-invalidate map after panel closes so it fills the space
+    setTimeout(() => map.invalidateSize({ animate: true }), 50);
     fetchInitialData();
   }
 

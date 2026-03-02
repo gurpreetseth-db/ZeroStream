@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
 
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260226"/>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260302b"/>
 </head>
 <body>
 
@@ -77,11 +77,75 @@
 </div>
 
 <!-- ══════════════════════════════════════════════ MAIN CONTENT ══ -->
-<div class="main-content">
+<div class="main-content" id="mainContent">
   
-  <!-- World Map -->
-  <div class="map-container">
-    <div id="worldMap" class="world-map"></div>
+  <!-- Left area: map + detail panel -->
+  <div class="left-area">
+    <!-- World Map -->
+    <div class="map-container">
+      <div id="worldMap" class="world-map"></div>
+    </div>
+
+    <!-- Client Detail Panel (shown below map when client clicked) -->
+    <div class="client-detail-panel" id="clientDetailPanel" style="display:none;">
+      <div class="detail-header">
+        <button class="btn-close-detail" id="btnCloseDetail">×</button>
+        <h3 id="detailDeviceName">Device</h3>
+        <span class="detail-status" id="detailStatus">Active</span>
+        <span class="detail-point-badge" id="detailPointBadge" style="display:none;">
+          Point <span id="detailPointNum">-</span> / <span id="detailPointTotal">-</span>
+        </span>
+      </div>
+      <div class="detail-body">
+        <!-- Left: point-level data (or client summary when no point selected) -->
+        <div class="detail-stats" id="detailStats">
+          <div class="stat-row">
+            <span class="stat-label">Timestamp</span>
+            <span class="stat-value" id="detailTimestamp">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Latitude</span>
+            <span class="stat-value" id="detailLat">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Longitude</span>
+            <span class="stat-value" id="detailLng">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Speed</span>
+            <span class="stat-value" id="detailSpeed">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Heading</span>
+            <span class="stat-value" id="detailHeading">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Battery</span>
+            <span class="stat-value" id="detailBattery">--</span>
+          </div>
+        </div>
+        <!-- Right: client summary (always visible) -->
+        <div class="detail-right">
+          <div class="detail-summary-block">
+            <h4>Client Summary</h4>
+            <div class="summary-grid">
+              <span class="sum-label">Events</span>
+              <span class="sum-value" id="detailTotalEvents">0</span>
+              <span class="sum-label">Data</span>
+              <span class="sum-value" id="detailDataIngested">0 KB</span>
+              <span class="sum-label">First Seen</span>
+              <span class="sum-value" id="detailFirstSeen">--</span>
+              <span class="sum-label">Last Seen</span>
+              <span class="sum-value" id="detailLastSeen">--</span>
+            </div>
+          </div>
+          <div class="detail-track-info">
+            <span id="detailTrackPoints">0 track points drawn</span>
+            <span class="point-hint" id="pointHint">Click a point on the map to inspect</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Connected Clients Sidebar -->
@@ -96,52 +160,10 @@
         <span>Loading clients…</span>
       </div>
     </div>
-    
-    <!-- Client Detail Panel (shown when client clicked) -->
-    <div class="client-detail-panel" id="clientDetailPanel" style="display:none;">
-      <div class="detail-header">
-        <button class="btn-close-detail" id="btnCloseDetail">×</button>
-        <h3 id="detailDeviceName">Device</h3>
-        <span class="detail-status" id="detailStatus">Active</span>
-      </div>
-      <div class="detail-stats">
-        <div class="stat-row">
-          <span class="stat-label">Total Events</span>
-          <span class="stat-value" id="detailTotalEvents">0</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Data Ingested</span>
-          <span class="stat-value" id="detailDataIngested">0 KB</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">First Seen</span>
-          <span class="stat-value" id="detailFirstSeen">--</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Last Seen</span>
-          <span class="stat-value" id="detailLastSeen">--</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Avg Speed</span>
-          <span class="stat-value" id="detailAvgSpeed">0 km/h</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Avg Battery</span>
-          <span class="stat-value" id="detailAvgBattery">0%</span>
-        </div>
-      </div>
-      <div class="detail-location">
-        <h4>Latest Position</h4>
-        <div class="location-coords" id="detailCoords">--</div>
-      </div>
-      <div class="detail-track-info">
-        <span id="detailTrackPoints">0 track points drawn</span>
-      </div>
-    </div>
   </aside>
 
 </div>
 
-<script src="/static/js/dashboard.js?v=20260226b"></script>
+<script src="/static/js/dashboard.js?v=20260302b"></script>
 </body>
 </html>

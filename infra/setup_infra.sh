@@ -50,7 +50,7 @@ err()     { echo -e "  ${RED}❌${RESET} $*"; exit 1; }
 divider() { echo -e "  ${CYAN}─────────────────────────────────────────────────${RESET}"; }
 
 STEP=0
-TOTAL=10
+TOTAL=11
 
 step() {
     STEP=$((STEP + 1))
@@ -187,7 +187,17 @@ else
     warn "LAKEBASE_INSTANCE not set - skipping Lakebase creation"
 fi
 
-# ── Step 6: Create Synced Table ────────────────────────────────────────────────
+# ── Step 6: Create Lakebase Service Principal & OAuth Credentials ─────────────
+#step "Create Lakebase Service Principal & OAuth Credentials"
+
+#if [ -n "${LAKEBASE_INSTANCE:-}" ]; then
+#    python3 "${SCRIPT_DIR}/create_lakebase_credentials.py" || warn "Lakebase credentials setup had issues — check output above"
+#    ok "Lakebase OAuth credentials configured"
+#else
+#    warn "LAKEBASE_INSTANCE not set - skipping Lakebase credentials"
+#fi
+
+# ── Step 7: Create Synced Table ────────────────────────────────────────────────
 #step "Create Lakebase Synced Table (Delta → PostgreSQL)"
 
 #if [ -n "${LAKEBASE_INSTANCE:-}" ]; then

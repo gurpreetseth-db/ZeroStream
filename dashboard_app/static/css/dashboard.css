@@ -217,10 +217,26 @@ html, body {
   overflow: hidden;
 }
 
+/* Left area: map + detail panel stacked vertically */
+.left-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
 /* Map Container */
 .map-container {
   flex: 1;
   position: relative;
+  min-height: 200px;
+  transition: flex 0.3s ease;
+}
+
+/* When client selected, map shares space with detail panel */
+.main-content.client-selected .map-container {
+  flex: 1 1 55%;
 }
 
 .world-map {
@@ -589,25 +605,21 @@ html, body {
 
 /* ═══════════════════════════════════ CLIENT DETAIL PANEL ═══════════════════ */
 .client-detail-panel {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
   background: var(--bg-white);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -4px 16px rgba(0,0,0,0.1);
-  padding: 16px;
-  z-index: 10;
-  max-height: 50%;
+  border-top: 2px solid var(--blue-primary);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.08);
+  padding: 14px 20px;
   overflow-y: auto;
+  flex: 0 0 auto;
+  max-height: 45%;
 }
 
 .detail-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--border-light);
 }
 
@@ -654,11 +666,18 @@ html, body {
   color: var(--orange-badge);
 }
 
+/* Horizontal layout: stats on left, location on right */
+.detail-body {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
 .detail-stats {
+  flex: 1;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
-  margin-bottom: 16px;
 }
 
 .stat-row {
@@ -684,11 +703,14 @@ html, body {
   font-family: var(--font-mono);
 }
 
-.detail-location {
-  margin-bottom: 12px;
+.detail-right {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.detail-location h4 {
+.detail-summary-block h4 {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-light);
@@ -696,21 +718,62 @@ html, body {
   margin-bottom: 6px;
 }
 
-.location-coords {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-dark);
+.summary-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
   background: var(--bg-light);
   padding: 8px 12px;
   border-radius: 6px;
+}
+.sum-label {
+  color: var(--text-light);
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.sum-value {
+  color: var(--text-dark);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 12px;
+  text-align: right;
 }
 
 .detail-track-info {
   font-size: 11px;
   color: var(--text-light);
   text-align: center;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-light);
+  padding: 6px 10px;
+  background: var(--bg-light);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.point-hint {
+  font-size: 10px;
+  color: var(--blue-primary);
+  font-style: italic;
+}
+
+/* Point badge in header */
+.detail-point-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: rgba(59,130,246,0.12);
+  color: var(--blue-primary);
+  font-family: var(--font-mono);
+}
+
+/* Highlight ring on selected track point */
+.selected-point-ring {
+  border: 3px solid var(--blue-primary) !important;
+  box-shadow: 0 0 0 4px rgba(59,130,246,0.3), 0 2px 8px rgba(0,0,0,0.3);
 }
 
 /* Selected client card */

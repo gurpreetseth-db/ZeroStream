@@ -24,6 +24,7 @@ SHARED_ENV_VARS = {
     "ZEROBUS_TOPIC": zerobus_cfg.topic,
     "DATABRICKS_HOST": databricks_cfg.host,
     "DATABRICKS_WAREHOUSE_ID": databricks_cfg.warehouse_id,
+    "LAKEBASE_INSTANCE": lakebase_cfg.instance,
     "LAKEBASE_HOST": lakebase_cfg.host,
     "LAKEBASE_PORT": str(lakebase_cfg.port),
     "LAKEBASE_DATABASES": lakebase_cfg.database,

@@ -1,7 +1,7 @@
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
 python-dotenv==1.0.1
-databricks-sdk==0.27.1
+databricks-sdk>=0.54.0
 httpx==0.27.0
 aiohttp==3.9.5
 jinja2==3.1.4
