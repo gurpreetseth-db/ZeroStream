@@ -24,11 +24,9 @@ from config.settings import (
     lakebase_cfg, delta_cfg, app_cfg,
     zerobus_cfg, validate_config,
 )
-# Use Delta client for dashboard (Lakebase sync not working)
+# Delta client only for test endpoint
 from delta_client import (
-    get_zerobus_stream,
     get_stream_count,
-    get_client_summary,
 )
 from lakebase_client import (
     get_dashboard_summary as lb_get_dashboard_summary,
@@ -36,6 +34,8 @@ from lakebase_client import (
     get_all_latest_locations as lb_get_all_latest_locations,
     get_client_track as lb_get_client_track,
     get_client_detail as lb_get_client_detail,
+    get_zerobus_stream as lb_get_zerobus_stream,
+    get_stream_count as lb_get_stream_count,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ async def api_client_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── API: ZeroBus stream (Delta) ───────────────────────────────────────────────
+# ── API: ZeroBus stream (Lakebase) ────────────────────────────────────────────
 @app.get("/api/zerobus/stream")
 async def api_zerobus_stream(
     limit:         int           = Query(default=100, le=500),
@@ -230,12 +230,12 @@ async def api_zerobus_stream(
     connection_id: Optional[str] = Query(default=None),
 ):
     try:
-        rows, elapsed_ms = get_zerobus_stream(
+        rows, elapsed_ms = await lb_get_zerobus_stream(
             limit=limit,
             offset=offset,
             connection_id=connection_id,
         )
-        total = get_stream_count(connection_id)
+        total = await lb_get_stream_count(connection_id)
         return {
             "rows":       rows,
             "count":      len(rows),

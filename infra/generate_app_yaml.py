@@ -30,6 +30,8 @@ SHARED_ENV_VARS = {
     "LAKEBASE_DATABASES": lakebase_cfg.database,
     "LAKEBASE_SCHEMA": lakebase_cfg.schema,
     "LAKEBASE_CATALOG": lakebase_cfg.catalog,
+    "LAKEBASE_ENDPOINT": lakebase_cfg.endpoint,
+    "LAKEBASE_TABLE": lakebase_cfg.table,
     "STREAM_INTERVAL_MS": str(zerobus_cfg.stream_interval_ms),
     "ACTIVE_WINDOW_SECONDS": str(lakebase_cfg.active_window_seconds),
 }
@@ -79,9 +81,9 @@ def generate_yaml(app_name: str, env_vars: dict) -> str:
         "# Apps > [app-name] > Settings > Environment Variables",
         "# - ZEROBUS_CLIENT_SECRET (if using ZeroBus OAuth)",
         "#",
-        "# For Lakebase access, add as app resource instead:",
-        "# Apps > [app-name] > Settings > Resources > Add Lakebase database",
-        "# This auto-injects: PGHOST, PGDATABASE, PGUSER, PGPASSWORD, PGPORT",
+        "# For Lakebase Autoscaling access, the app uses the Databricks SDK to",
+        "# generate OAuth tokens via w.postgres.generate_database_credential().",
+        "# No manual PG credentials are needed.",
         "# ============================================================================",
     ])
     

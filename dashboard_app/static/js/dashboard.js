@@ -53,11 +53,21 @@ const Dashboard = (() => {
     map.createPane('trackMarkerPane');
     map.getPane('trackMarkerPane').style.zIndex = 660;
 
-    // Use CartoDB Voyager (same as mobile app - clean light map)
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    // Satellite tile layer (Esri World Imagery)
+    const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '&copy; Esri',
+      maxZoom: 19
+    });
+
+    // Street tile layer (CartoDB Voyager)
+    const streetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; CartoDB',
       maxZoom: 19
-    }).addTo(map);
+    });
+
+    // Default to satellite
+    satelliteLayer.addTo(map);
+    window._mapLayers = { satellite: satelliteLayer, street: streetLayer };
 
     // Zoom control bottom-left
     L.control.zoom({ position: 'bottomleft' }).addTo(map);
@@ -92,9 +102,21 @@ const Dashboard = (() => {
   }
 
   function setMapLayer(layer) {
-    // For now just satellite - can add street layer later
     currentLayer = layer;
-    $('#btnSatellite').classList.toggle('active', layer === 'satellite');
+    const layers = window._mapLayers;
+    if (layers) {
+      if (layer === 'satellite') {
+        map.removeLayer(layers.street);
+        if (!map.hasLayer(layers.satellite)) layers.satellite.addTo(map);
+      } else {
+        map.removeLayer(layers.satellite);
+        if (!map.hasLayer(layers.street)) layers.street.addTo(map);
+      }
+    }
+    const btnSat = $('#btnSatellite');
+    const btnStr = $('#btnStreet');
+    if (btnSat) btnSat.classList.toggle('active', layer === 'satellite');
+    if (btnStr) btnStr.classList.toggle('active', layer === 'street');
   }
 
   // ══════════════════════════════════════════════════════════════════════════

@@ -34,12 +34,11 @@ def check_packages():
         "fastapi":        "required",
         "uvicorn":        "required",
         "databricks.sdk": "required",
-        "asyncpg":        "required",
-        "pg8000":         "required",
+        "psycopg2":       "required",
         "jinja2":         "required",
         "httpx":          "required",
         "pydantic":       "required",
-        "psycopg2":       "optional",
+        "pg8000":         "optional",
         "psycopg":        "optional",
     }
 
@@ -161,97 +160,105 @@ async def check_lakebase():
     lakebase_user = lakebase_cfg.user
     lakebase_password = lakebase_cfg.password
     
-    # If no user/password configured, try OAuth M2M using ZeroBus service principal
+    # If no user/password configured, try Lakebase Autoscaling OAuth via SDK
     if not lakebase_user or not lakebase_password:
-        if zerobus_cfg.client_id and zerobus_cfg.client_secret:
-            info("Trying OAuth M2M authentication for Lakebase...")
-            try:
-                import httpx
-                token_url = f"{databricks_cfg.host}oidc/v1/token"
-                token_resp = httpx.post(
-                    token_url,
-                    data={
-                        "grant_type": "client_credentials",
-                        "scope": "all-apis",
-                    },
-                    auth=(zerobus_cfg.client_id, zerobus_cfg.client_secret),
-                    timeout=10,
-                )
-                if token_resp.status_code == 200:
-                    oauth_token = token_resp.json().get("access_token")
-                    lakebase_user = zerobus_cfg.client_id
-                    lakebase_password = oauth_token
-                    ok("OAuth M2M token obtained for Lakebase")
-                else:
-                    warn(f"OAuth token request returned {token_resp.status_code}")
-            except Exception as e:
-                warn(f"OAuth M2M failed: {e}")
+        try:
+            from databricks.sdk import WorkspaceClient
+            info("Trying Lakebase Autoscaling OAuth via SDK...")
+            w = WorkspaceClient()
+
+            # Discover endpoint from project
+            lakebase_instance = lakebase_cfg.instance or os.environ.get("LAKEBASE_INSTANCE", "")
+            lakebase_endpoint = lakebase_cfg.endpoint or os.environ.get("LAKEBASE_ENDPOINT", "")
+
+            if not lakebase_endpoint and lakebase_instance:
+                branch_path = f"projects/{lakebase_instance}/branches/production"
+                endpoints = list(w.postgres.list_endpoints(parent=branch_path))
+                if endpoints:
+                    lakebase_endpoint = endpoints[0].name
+
+            if lakebase_endpoint:
+                cred = w.postgres.generate_database_credential(endpoint=lakebase_endpoint)
+                lakebase_user = w.current_user.me().user_name
+                lakebase_password = cred.token
+                ok("Lakebase Autoscaling OAuth token obtained")
+            else:
+                warn("Could not discover Lakebase endpoint")
+        except Exception as e:
+            warn(f"Lakebase SDK auth failed: {e}")
         
         if not lakebase_user or not lakebase_password:
             warn("Lakebase credentials not configured for local testing")
-            info("Note: Databricks Apps get Lakebase access via app resources (auto-injected)")
             info("For local testing, set LAKEBASE_USER and LAKEBASE_PASSWORD in .env")
             return False
     
     try:
-        import asyncpg
+        import psycopg2
 
         start = time.perf_counter()
-        conn  = await asyncpg.connect(
+        conn  = psycopg2.connect(
             host=lakebase_cfg.host,
             port=lakebase_cfg.port,
             user=lakebase_user,
             password=lakebase_password,
-            database=lakebase_cfg.database,
-            ssl="require",
-            timeout=15,
+            dbname=lakebase_cfg.database,
+            sslmode="require",
         )
+        conn.autocommit = True
         elapsed = round((time.perf_counter() - start) * 1000)
         ok(f"Lakebase connected ({elapsed}ms)")
 
+        cursor = conn.cursor()
+
         # Check schema exists
-        schema_exists = await conn.fetchval(
+        cursor.execute(
             "SELECT EXISTS(SELECT 1 FROM information_schema.schemata "
-            "WHERE schema_name = $1)",
-            lakebase_cfg.schema,
+            "WHERE schema_name = %s)",
+            (lakebase_cfg.schema,),
         )
+        schema_exists = cursor.fetchone()[0]
         if schema_exists:
             ok(f"Schema '{lakebase_cfg.schema}' exists")
         else:
             warn(f"Schema '{lakebase_cfg.schema}' not found - run deployment")
 
         # Check table exists
-        table_exists = await conn.fetchval(
+        _table = lakebase_cfg.table or os.environ.get("TABLE_NAME", "sensor_stream")
+        cursor.execute(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema = $1 AND table_name = 'sensor_stream')",
-            lakebase_cfg.schema,
+            "WHERE table_schema = %s AND table_name = %s)",
+            (lakebase_cfg.schema, _table),
         )
+        table_exists = cursor.fetchone()[0]
         if table_exists:
             # Count rows
-            count = await conn.fetchval(
-                f"SELECT COUNT(*) FROM {lakebase_cfg.schema}.sensor_stream"
+            cursor.execute(
+                f'SELECT COUNT(*) FROM "{lakebase_cfg.schema}"."{_table}"'
             )
-            ok(f"Table sensor_stream exists ({count:,} rows)")
+            count = cursor.fetchone()[0]
+            ok(f"Table {_table} exists ({count:,} rows)")
         else:
-            warn("Table sensor_stream not found - run deployment")
+            warn(f"Table {_table} not found - run deployment")
 
         # Check materialized view
-        matview_exists = await conn.fetchval(
+        cursor.execute(
             "SELECT EXISTS(SELECT 1 FROM pg_matviews "
-            "WHERE schemaname = $1 AND matviewname = 'client_summary')",
-            lakebase_cfg.schema,
+            "WHERE schemaname = %s AND matviewname = 'client_summary')",
+            (lakebase_cfg.schema,),
         )
+        matview_exists = cursor.fetchone()[0]
         if matview_exists:
             ok("Materialized view client_summary exists")
         else:
             warn("Materialized view client_summary not found - run deployment")
 
         # Check active_clients view
-        view_exists = await conn.fetchval(
+        cursor.execute(
             "SELECT EXISTS(SELECT 1 FROM information_schema.views "
-            "WHERE table_schema = $1 AND table_name = 'active_clients')",
-            lakebase_cfg.schema,
+            "WHERE table_schema = %s AND table_name = 'active_clients')",
+            (lakebase_cfg.schema,),
         )
+        view_exists = cursor.fetchone()[0]
         if view_exists:
             ok("View active_clients exists")
         else:
@@ -259,16 +266,13 @@ async def check_lakebase():
 
         # Test query latency
         start = time.perf_counter()
-        await conn.fetchval("SELECT 1")
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
         ping_ms = round((time.perf_counter() - start) * 1000, 2)
         ok(f"Lakebase ping latency: {ping_ms}ms")
 
-        await conn.close()
+        conn.close()
         return True
-
-    except ImportError:
-        warn("asyncpg not available - trying pg8000...")
-        return _check_lakebase_pg8000()
     except Exception as e:
         err_str = str(e).lower()
         if "role" in err_str and "does not exist" in err_str:
@@ -285,31 +289,26 @@ async def check_lakebase():
             return False
 
 
-def _check_lakebase_pg8000():
-    """Sync fallback using pg8000."""
+def _check_lakebase_fallback():
+    """Fallback Lakebase connection check."""
     try:
-        import pg8000
-        import ssl as _ssl
-
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode    = _ssl.CERT_NONE
+        import psycopg2
 
         start = time.perf_counter()
-        conn  = pg8000.connect(
+        conn  = psycopg2.connect(
             host=lakebase_cfg.host,
             port=lakebase_cfg.port,
             user=lakebase_cfg.user,
             password=lakebase_cfg.password,
-            database=lakebase_cfg.database,
-            ssl_context=ssl_ctx,
+            dbname=lakebase_cfg.database,
+            sslmode="require",
         )
         elapsed = round((time.perf_counter() - start) * 1000)
-        ok(f"Lakebase connected via pg8000 ({elapsed}ms)")
+        ok(f"Lakebase connected via psycopg2 ({elapsed}ms)")
         conn.close()
         return True
     except Exception as e:
-        fail(f"Lakebase pg8000 error: {e}")
+        fail(f"Lakebase psycopg2 error: {e}")
         return False
 
 
@@ -438,64 +437,9 @@ def check_apps():
         return False
 
 
-# ── Check 8: Lakebase Synced Table ────────────────────────────────────────────
-def check_synced_table():
-    hdr("8. Lakebase Synced Table (Delta → PostgreSQL)")
-    try:
-        import subprocess
-        import json
-
-        synced_table_name = f"{delta_cfg.catalog}.{delta_cfg.schema}.{delta_cfg.table_name}_synced"
-
-        cmd = [
-            "databricks", "database", "get-synced-database-table",
-            synced_table_name,
-            "--output", "json",
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            warn(f"Synced table '{synced_table_name}' not found")
-            info("Run: python3 deployment/03_create_synced_table.py")
-            return False
-
-        status = json.loads(result.stdout)
-        sync_status = status.get("data_synchronization_status", {})
-        detailed_state = sync_status.get("detailed_state", "UNKNOWN")
-        uc_state = status.get("unity_catalog_provisioning_state", "UNKNOWN")
-        pipeline_id = sync_status.get("pipeline_id", "N/A")
-
-        ok(f"Synced table: {synced_table_name}")
-        ok(f"Pipeline ID : {pipeline_id}")
-
-        if "ONLINE" in detailed_state or uc_state == "ACTIVE":
-            ok(f"State: {detailed_state} ✓")
-        elif "PROVISIONING" in detailed_state:
-            warn(f"State: {detailed_state} (initial sync in progress)")
-        elif "FAILED" in detailed_state:
-            fail(f"State: {detailed_state}")
-            info(f"View pipeline: {databricks_cfg.host}#joblist/pipelines/{pipeline_id}")
-            return False
-        else:
-            warn(f"State: {detailed_state}")
-
-        if pipeline_id != "N/A":
-            info(f"View: {databricks_cfg.host}#joblist/pipelines/{pipeline_id}")
-
-        return True
-
-    except subprocess.TimeoutExpired:
-        fail("Synced table check timed out")
-        return False
-    except Exception as e:
-        fail(f"Synced table check error: {e}")
-        return False
-
-
 # ── End-to-end data flow test ─────────────────────────────────────────────────
 async def check_data_flow():
-    hdr("9. End-to-End Data Flow Test")
+    hdr("8. End-to-End Data Flow Test")
 
     try:
         # Generate one test event
@@ -521,23 +465,25 @@ async def check_data_flow():
 
         # Test Lakebase write/read round-trip
         try:
-            import asyncpg
-            conn = await asyncpg.connect(
+            import psycopg2
+
+            conn = psycopg2.connect(
                 host=lakebase_cfg.host,
                 port=lakebase_cfg.port,
                 user=lakebase_cfg.user,
                 password=lakebase_cfg.password,
-                database=lakebase_cfg.database,
-                ssl="require",
-                timeout=15,
+                dbname=lakebase_cfg.database,
+                sslmode="require",
             )
+            conn.autocommit = True
+            cursor = conn.cursor()
 
             # Write test record
             test_event_id = f"verify-{int(time.time())}"
             from datetime import timezone
             now = datetime.now(timezone.utc)
 
-            await conn.execute(
+            cursor.execute(
                 f"""
                 INSERT INTO {lakebase_cfg.schema}.sensor_stream (
                     event_id, connection_id, device_name,
@@ -549,48 +495,51 @@ async def check_data_flow():
                     speed_kmh, battery_pct, signal_strength,
                     zerobus_topic, zerobus_offset, payload_bytes
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-                    $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                 )
                 ON CONFLICT (event_id) DO NOTHING
                 """,
-                test_event_id,
-                p["connection_id"],
-                p["device_name"],
-                now, now, now,
-                p["latitude"],   p["longitude"],  p["altitude_m"],
-                p["heading_deg"],p["pitch_deg"],   p["roll_deg"],
-                p["accel_x"],    p["accel_y"],     p["accel_z"],
-                p["accel_magnitude"],
-                p["gyro_x"],     p["gyro_y"],      p["gyro_z"],
-                p["speed_kmh"],  p["battery_pct"], p["signal_strength"],
-                zerobus_cfg.topic, 0, p["payload_bytes"],
+                (
+                    test_event_id,
+                    p["connection_id"],
+                    p["device_name"],
+                    now, now, now,
+                    p["latitude"],   p["longitude"],  p["altitude_m"],
+                    p["heading_deg"],p["pitch_deg"],   p["roll_deg"],
+                    p["accel_x"],    p["accel_y"],     p["accel_z"],
+                    p["accel_magnitude"],
+                    p["gyro_x"],     p["gyro_y"],      p["gyro_z"],
+                    p["speed_kmh"],  p["battery_pct"], p["signal_strength"],
+                    zerobus_cfg.topic, 0, p["payload_bytes"],
+                ),
             )
             ok("Test record written to Lakebase")
 
             # Read it back
             start = time.perf_counter()
-            row   = await conn.fetchrow(
+            cursor.execute(
                 f"SELECT * FROM {lakebase_cfg.schema}.sensor_stream "
-                f"WHERE event_id = $1",
-                test_event_id,
+                f"WHERE event_id = %s",
+                (test_event_id,),
             )
+            row = cursor.fetchone()
             read_ms = round((time.perf_counter() - start) * 1000, 2)
 
             if row:
                 ok(f"Test record read back from Lakebase ({read_ms}ms)")
-                ok(f"  Round-trip latency: {read_ms}ms ✓")
+                ok(f"  Round-trip latency: {read_ms}ms")
             else:
                 fail("Test record not found after write")
 
             # Clean up test record
-            await conn.execute(
+            cursor.execute(
                 f"DELETE FROM {lakebase_cfg.schema}.sensor_stream "
-                f"WHERE event_id = $1",
-                test_event_id,
+                f"WHERE event_id = %s",
+                (test_event_id,),
             )
             ok("Test record cleaned up")
-            await conn.close()
+            conn.close()
 
         except Exception as e:
             warn(f"Lakebase round-trip test skipped: {e}")
@@ -656,7 +605,6 @@ async def main():
     results["Delta Table"]       = check_delta_table()
     results["ZeroBus"]           = check_zerobus()
     results["Databricks Apps"]   = check_apps()
-    results["Synced Table"]      = check_synced_table()
 
     # Async checks
     results["Lakebase"]          = await check_lakebase()
