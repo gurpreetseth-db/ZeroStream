@@ -1,47 +1,48 @@
 """
 Lakebase PostgreSQL client for ZeroStream dashboard.
-Uses asyncpg for async queries to the synced table.
+Uses psycopg2 for queries to the Lakebase Autoscaling table.
 
 Authentication:
-  When deployed as a Databricks App with a Lakebase resource declared in app.yaml,
-  Databricks automatically:
-    - Creates a Postgres role for the app's service principal
-    - Grants CONNECT + CREATE on the database
-    - Injects PGHOST, PGDATABASE, PGUSER, PGPASSWORD, PGPORT as environment variables
-
-  The OAuth token (PGPASSWORD) expires every hour. This client uses the Databricks SDK's
-  w.database.generate_database_credential() to refresh it automatically before expiry,
-  without any manual secret management.
+  In Databricks Apps runtime: uses auto-injected PGUSER/PGPASSWORD env vars.
+  Locally: uses Databricks SDK w.postgres.generate_database_credential() to
+  obtain OAuth tokens. Tokens expire every hour and are auto-refreshed at the
+  55-minute mark.
 """
 import asyncio
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-import asyncpg
-from databricks.sdk import WorkspaceClient
+import psycopg2
 
 from config.settings import lakebase_cfg
 
-# Synced table name — default to sensor_stream_synced if LAKEBASE_TABLE not set
-_TABLE = lakebase_cfg.table or "sensor_stream_synced"
+try:
+    from databricks.sdk import WorkspaceClient
+except ImportError:
+    WorkspaceClient = None
+
+# Table name — uses TABLE_NAME (direct write table, not synced)
+_TABLE = lakebase_cfg.table or os.environ.get("TABLE_NAME", "sensor_stream")
 _SCHEMA = lakebase_cfg.schema or "public"
-_FQTN = f"{_SCHEMA}.{_TABLE}"
+_FQTN = f'"{_SCHEMA}"."{_TABLE}"'
 
 logger = logging.getLogger("lakebase_client")
 
-# ── Token + pool state ─────────────────────────────────────────────────────────
-_pool:             Optional[asyncpg.pool.Pool] = None
-_pool_lock:        asyncio.Lock                = asyncio.Lock()
-_current_token:    str                         = ""
-_token_expires_at: float                       = 0.0     # unix timestamp
-_REFRESH_BUFFER:   int                         = 300     # refresh 5 min before expiry
+# ── Token + connection state ───────────────────────────────────────────────────
+_conn:             Optional[psycopg2.extensions.connection] = None
+_conn_lock:        asyncio.Lock                             = asyncio.Lock()
+_current_token:    str                                      = ""
+_current_user:     str                                      = ""      # PG username from SDK
+_token_expires_at: float                                    = 0.0     # unix timestamp
+_REFRESH_BUFFER:   int                                      = 300     # refresh 5 min before expiry
 
-# Databricks SDK client (lazy init)
-_ws_client: Optional[WorkspaceClient] = None
+# Databricks SDK client (lazy init — only used for local dev)
+_ws_client = None
 
 
 def _get_ws_client() -> WorkspaceClient:
@@ -64,131 +65,141 @@ def _token_needs_refresh() -> bool:
 
 def _refresh_token() -> str:
     """
-    Use the Databricks SDK to generate a fresh OAuth token for Lakebase.
+    Use the Databricks SDK to generate a fresh OAuth token for Lakebase Autoscaling.
     Updates module-level _current_token and _token_expires_at.
 
-    w.database.generate_database_credential() is the official SDK method —
-    it handles all the OAuth plumbing and returns a short-lived token.
+    w.postgres.generate_database_credential() is the official SDK method for
+    Lakebase Autoscaling — it handles OAuth plumbing and returns a short-lived token.
     """
-    global _current_token, _token_expires_at
+    global _current_token, _current_user, _token_expires_at
 
-    instance_name = lakebase_cfg.instance
-    if not instance_name:
+    endpoint_name = lakebase_cfg.endpoint
+    project_id = lakebase_cfg.instance
+
+    if not endpoint_name and not project_id:
         raise RuntimeError(
-            "LAKEBASE_INSTANCE is not set. "
-            "Run infra/setup_infra.sh to provision the Lakebase instance."
+            "LAKEBASE_ENDPOINT or LAKEBASE_INSTANCE is not set. "
+            "Run infra/setup_infra.sh to provision the Lakebase project."
         )
 
-    logger.info(f"🔄 Refreshing Lakebase OAuth token for instance '{instance_name}'...")
+    logger.info(f"🔄 Refreshing Lakebase OAuth token for project '{project_id}'...")
 
     w = _get_ws_client()
 
-    # SDK has two credential APIs with different signatures:
-    #   w.database.generate_database_credential(instance_names=[...], request_id=...)
-    #       → Lakebase Provisioned (what we need)
-    #   w.postgres.generate_database_credential(endpoint)
-    #       → Lakebase Autoscale (different API, not for provisioned instances)
-    # Always prefer w.database for provisioned Lakebase instances.
-    if hasattr(w, "database"):
-        cred = w.database.generate_database_credential(
-            request_id     = str(uuid.uuid4()),
-            instance_names = [instance_name],
-        )
-    elif hasattr(w, "postgres"):
-        # Autoscale API fallback — endpoint format differs
-        cred = w.postgres.generate_database_credential(
-            endpoint=instance_name,
-        )
-    else:
-        raise RuntimeError(
-            "WorkspaceClient missing database/postgres client; upgrade databricks-sdk >= 0.54.0"
-        )
+    # Discover endpoint if not explicitly configured
+    if not endpoint_name and project_id:
+        endpoints = list(w.postgres.list_endpoints(
+            parent=f"projects/{project_id}/branches/production"
+        ))
+        if endpoints:
+            endpoint_name = endpoints[0].name
+        else:
+            raise RuntimeError(
+                f"No endpoints found for projects/{project_id}/branches/production"
+            )
+
+    cred = w.postgres.generate_database_credential(
+        endpoint=endpoint_name,
+    )
 
     if not cred or not cred.token:
         raise RuntimeError("generate_database_credential() returned no token")
 
     _current_token    = cred.token
+    _current_user     = w.current_user.me().user_name
     # SDK doesn't return expires_in, so assume 1 hour (standard Databricks token TTL)
     _token_expires_at = time.time() + 3600
 
-    logger.info("✅ Lakebase OAuth token refreshed (valid ~1hr, auto-refresh at 55min)")
+    logger.info(f"✅ Lakebase OAuth token refreshed for user '{_current_user}' (valid ~1hr)")
     return _current_token
 
 
-# ── Connection pool ────────────────────────────────────────────────────────────
+def _use_injected_fallback():
+    """Fallback: use PGUSER/PGPASSWORD injected by the Databricks Apps resource block."""
+    global _current_token, _current_user, _token_expires_at
+    pw = os.environ.get("PGPASSWORD", "")
+    user = os.environ.get("PGUSER", "")
+    if pw and user:
+        _current_token = pw
+        _current_user = user
+        _token_expires_at = time.time() + 3600  # assume 1hr
+        logger.info(f"Using injected PGPASSWORD fallback for user '{user}'")
+    else:
+        raise RuntimeError("No SDK token and no PGPASSWORD available")
 
-async def _close_pool():
-    """Close and discard the current pool."""
-    global _pool
-    if _pool is not None:
+
+# ── Connection management ──────────────────────────────────────────────────────
+
+async def _close_conn():
+    """Close and discard the current connection."""
+    global _conn
+    if _conn is not None:
         try:
-            await _pool.close()
+            _conn.close()
         except Exception as e:
-            logger.warning(f"Error closing pool: {e}")
-        _pool = None
+            logger.warning(f"Error closing connection: {e}")
+        _conn = None
 
 
-async def get_pool() -> asyncpg.pool.Pool:
+def _get_connection_sync():
+    """Create a new psycopg2 connection (synchronous). Called from thread."""
+    global _conn
+
+    # Use the SDK-authenticated identity that generated the token
+    pg_user = _current_user or lakebase_cfg.user
+
+    # Always use the SDK-refreshed OAuth token
+    pg_password = _current_token
+
+    logger.info(f"Creating Lakebase connection → {lakebase_cfg.host}:{lakebase_cfg.port}")
+    _conn = psycopg2.connect(
+        user=pg_user,
+        password=pg_password,
+        dbname=lakebase_cfg.database,
+        host=lakebase_cfg.host,
+        port=lakebase_cfg.port,
+        sslmode="require",
+    )
+    _conn.autocommit = True
+    logger.info("✅ Lakebase connection ready")
+    return _conn
+
+
+async def get_conn():
     """
-    Return a live connection pool, refreshing the OAuth token if needed.
-    Uses asyncio.Lock so concurrent coroutines don't trigger multiple simultaneous refreshes.
-
-    Connection params priority:
-      - host/port/database: from LAKEBASE_* env vars (set in app.yaml / generated_config.env)
-      - user: from PGUSER (auto-injected by Databricks Apps when Lakebase resource is configured)
-      - password: freshly generated OAuth token via Databricks SDK
+    Return a live connection, refreshing the OAuth token if needed.
+    Uses w.postgres.generate_database_credential() to obtain fresh tokens.
     """
-    global _pool
+    global _conn
 
-    async with _pool_lock:
-        # Check if token needs refresh
+    async with _conn_lock:
         if _token_needs_refresh():
             logger.info("Lakebase token needs refresh...")
             try:
-                # generate_database_credential is sync — run in thread to avoid blocking event loop
                 await asyncio.to_thread(_refresh_token)
             except Exception as e:
-                logger.error(f"Token refresh failed: {e}")
-                raise
+                logger.warning(f"SDK token refresh failed: {e}")
+                # Fallback: use PGPASSWORD/PGUSER injected by Apps runtime
+                _use_injected_fallback()
+            # Close existing connection — it's using the old token
+            await _close_conn()
 
-            # Close existing pool — it's using the old (expired) token as password
-            await _close_pool()
-
-        # Create pool if it doesn't exist
-        if _pool is None:
-            # PGUSER is auto-injected by Databricks Apps when Lakebase resource is configured.
-            # Fall back to LAKEBASE_USER or SP client_id if running locally.
-            pg_user = (
-                os.environ.get("PGUSER")
-                or lakebase_cfg.user
-                or os.environ.get("LAKEBASE_SP_CLIENT_ID", "")
-            )
-
-            logger.info(f"Creating Lakebase connection pool → {lakebase_cfg.dsn_safe}")
+        # Create connection if it doesn't exist
+        if _conn is None:
             try:
-                _pool = await asyncpg.create_pool(
-                    user     = pg_user,
-                    password = _current_token,
-                    database = lakebase_cfg.database,
-                    host     = lakebase_cfg.host,
-                    port     = lakebase_cfg.port,
-                    ssl      = "require",
-                    min_size = 1,
-                    max_size = 4,
-                )
-                logger.info("✅ Lakebase connection pool ready")
+                await asyncio.to_thread(_get_connection_sync)
             except Exception as e:
-                logger.error(f"Failed to create Lakebase pool: {e}")
-                _pool = None
+                logger.error(f"Failed to create Lakebase connection: {e}")
+                _conn = None
                 raise
 
-    return _pool
+    return _conn
 
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
 def _json_safe(val):
-    """Convert asyncpg types (datetime, Decimal, etc.) to JSON-serializable."""
+    """Convert Python types (datetime, Decimal, etc.) to JSON-serializable."""
     if val is None:
         return None
     if isinstance(val, datetime):
@@ -219,15 +230,93 @@ def _is_active(ts_value, window_seconds: int = None) -> bool:
     return ts_value > (datetime.now(timezone.utc) - timedelta(seconds=window_seconds))
 
 
+def _pg_to_dbapi(sql: str) -> str:
+    """Convert $1, $2, ... PostgreSQL placeholders to %s for pg8000 DB-API."""
+    return re.sub(r'\$\d+', '%s', sql)
+
+
 async def fetch_rows(sql: str, *args) -> List[Dict[str, Any]]:
     """Execute a query and return results as a list of JSON-safe dicts."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, *args)
-        return [_json_row(dict(row)) for row in rows]
+    conn = await get_conn()
+
+    def _run():
+        cursor = conn.cursor()
+        cursor.execute(_pg_to_dbapi(sql), args if args else None)
+        if cursor.description is None:
+            return []
+        cols = [d[0] for d in cursor.description]
+        return [_json_row(dict(zip(cols, row))) for row in cursor.fetchall()]
+
+    return await asyncio.to_thread(_run)
 
 
 # ── Lakebase queries ───────────────────────────────────────────────────────────
+
+async def get_zerobus_stream(
+    limit: int = 100,
+    offset: int = 0,
+    connection_id: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], float]:
+    """Fetch recent sensor events from the Lakebase table."""
+    where = ""
+    params = []
+    if connection_id:
+        where = "WHERE connection_id = $1"
+        params.append(connection_id)
+
+    sql = f"""
+        SELECT
+            event_id,
+            connection_id,
+            device_name,
+            TO_CHAR(event_timestamp, 'YYYY-MM-DD HH24:MI:SS.MS') AS event_time,
+            TO_CHAR(event_date, 'YYYY-MM-DD') AS event_date,
+            ROUND(latitude::numeric,  6)  AS latitude,
+            ROUND(longitude::numeric, 6)  AS longitude,
+            ROUND(altitude_m::numeric, 1) AS altitude_m,
+            ROUND(heading_deg::numeric, 1) AS heading_deg,
+            ROUND(pitch_deg::numeric,   1) AS pitch_deg,
+            ROUND(roll_deg::numeric,    1) AS roll_deg,
+            ROUND(accel_x::numeric,     3) AS accel_x,
+            ROUND(accel_y::numeric,     3) AS accel_y,
+            ROUND(accel_z::numeric,     3) AS accel_z,
+            ROUND(accel_magnitude::numeric, 3) AS accel_magnitude,
+            ROUND(gyro_x::numeric,  3) AS gyro_x,
+            ROUND(gyro_y::numeric,  3) AS gyro_y,
+            ROUND(gyro_z::numeric,  3) AS gyro_z,
+            ROUND(speed_kmh::numeric, 1) AS speed_kmh,
+            battery_pct,
+            signal_strength,
+            zerobus_topic,
+            zerobus_offset,
+            payload_bytes,
+            TO_CHAR(ingested_at, 'YYYY-MM-DD HH24:MI:SS') AS ingested_at
+        FROM {_FQTN}
+        {where}
+        ORDER BY event_timestamp DESC
+        LIMIT {limit}
+        OFFSET {offset}
+    """
+    start = time.time()
+    rows = await fetch_rows(sql, *params)
+    elapsed_ms = round((time.time() - start) * 1000, 2)
+    return rows, elapsed_ms
+
+
+async def get_stream_count(connection_id: Optional[str] = None) -> int:
+    """Return total row count for pagination."""
+    where = ""
+    params = []
+    if connection_id:
+        where = "WHERE connection_id = $1"
+        params.append(connection_id)
+
+    sql = f"SELECT COUNT(*) AS cnt FROM {_FQTN} {where}"
+    rows = await fetch_rows(sql, *params)
+    if rows:
+        return int(rows[0].get("cnt", 0))
+    return 0
+
 
 async def get_dashboard_summary() -> Dict[str, Any]:
     sql = f"""

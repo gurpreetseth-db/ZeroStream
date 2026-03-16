@@ -127,6 +127,29 @@ def create_service_principal(host: str, token: str, name: str) -> dict:
         }
 
 
+def _cleanup_old_secrets(host: str, token: str, sp_id: str, application_id: str):
+    """Delete the oldest OAuth secret to make room for a new one."""
+    try:
+        url = f"{host}/api/2.0/accounts/servicePrincipals/{sp_id}/credentials/secrets"
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 200:
+            return
+        secrets = resp.json().get("secrets", [])
+        if len(secrets) < 5:
+            return
+        # Sort by create_time ascending, delete the oldest
+        secrets.sort(key=lambda s: s.get("create_time", 0))
+        oldest = secrets[0]
+        secret_id = oldest.get("id")
+        if secret_id:
+            print(f"  🗑️  Deleting oldest OAuth secret {secret_id} to free quota...")
+            del_url = f"{url}/{secret_id}"
+            requests.delete(del_url, headers=headers)
+    except Exception as e:
+        print(f"  ⚠️  Could not clean up old secrets: {e}")
+
+
 def create_oauth_secret(host: str, token: str, application_id: str, id: str, sp_name: str) -> dict:
     """Create OAuth client secret for the service principal.
     
@@ -136,10 +159,14 @@ def create_oauth_secret(host: str, token: str, application_id: str, id: str, sp_
         host: Databricks workspace host
         token: Databricks API token
         application_id: The service principal's application ID (UUID format)
+        id: The service principal's numeric ID
         sp_name: Service principal display name (for error messages)
     """
     
     print(f"  🔑 Creating OAuth secret for {application_id}...")
+    
+    # First, try to clean up old secrets if quota is full
+    _cleanup_old_secrets(host, token, id, application_id)
     
     # Use the correct CLI command: service-principal-secrets-proxy
     cmd = [
@@ -175,8 +202,8 @@ def create_oauth_secret(host: str, token: str, application_id: str, id: str, sp_
     print(f"     Trying REST API fallback...")
     
     try:
-        # Use the workspace-level service principal secrets API
-        url = f"{host}/api/2.0/accounts/servicePrincipals/{application_id}/credentials/secrets"
+        # Use the workspace-level service principal secrets API (numeric ID, not application_id)
+        url = f"{host}/api/2.0/accounts/servicePrincipals/{id}/credentials/secrets"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",

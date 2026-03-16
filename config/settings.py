@@ -71,28 +71,32 @@ class ZeroBusConfig:
 
 @dataclass
 class LakebaseConfig:
-    """Lakebase configuration.
+    """Lakebase Autoscaling configuration.
     
-    When deployed to Databricks Apps with a Lakebase resource, these standard
-    PostgreSQL env vars are auto-injected: PGHOST, PGDATABASE, PGUSER, PGPASSWORD, PGPORT
+    Uses Lakebase Autoscaling (w.postgres API) with autoscaling compute,
+    scale-to-zero, and OAuth token authentication.
     
-    The LAKEBASE_* vars are fallbacks for local development.
-    Priority: LAKEBASE_* env vars override PG* vars (for explicit control).
+    The LAKEBASE_* vars configure the connection.
     """
-    # Connection params: LAKEBASE_* takes priority over auto-injected PG* vars
+    # Connection params
     host:                   str = field(default_factory=lambda: os.environ.get("LAKEBASE_HOST") or os.environ.get("PGHOST", ""))
     port:                   int = field(default_factory=lambda: int(os.environ.get("LAKEBASE_PORT") or os.environ.get("PGPORT", "5432")))
-    database:               str = field(default_factory=lambda: os.environ.get("LAKEBASE_DATABASES") or os.environ.get("PGDATABASE", "zerobus_app_psg_db"))
+    database:               str = field(default_factory=lambda: os.environ.get("LAKEBASE_DATABASES") or os.environ.get("PGDATABASE", "databricks_postgres"))
     user:                   str = field(default_factory=lambda: os.environ.get("LAKEBASE_USER") or os.environ.get("PGUSER", ""))
     password:               str = field(default_factory=lambda: os.environ.get("LAKEBASE_PASSWORD") or os.environ.get("PGPASSWORD", ""))
     
-    # App-specific config (not auto-injected)
+    # Autoscaling project config
     instance:               str = field(default_factory=lambda: os.environ.get("LAKEBASE_INSTANCE", ""))
-    catalog:                str = field(default_factory=lambda: os.environ.get("LAKEBASE_CATALOG", "gsethi"))
-    # Synced table schema - matches UC schema for synced tables
+    catalog:                str = field(default_factory=lambda: os.environ.get("LAKEBASE_CATALOG", ""))
     schema:                 str = field(default_factory=lambda: os.environ.get("LAKEBASE_SCHEMA", ""))
     table:                  str = field(default_factory=lambda: os.environ.get("LAKEBASE_TABLE", ""))
-    active_window_seconds:  int = field(default_factory=lambda: int(os.environ.get("ACTIVE_WINDOW_SECONDS", "")))  # 5 min for better visibility
+    endpoint:               str = field(default_factory=lambda: os.environ.get("LAKEBASE_ENDPOINT", ""))
+    active_window_seconds:  int = field(default_factory=lambda: int(os.environ.get("ACTIVE_WINDOW_SECONDS", "5")))
+    
+    # Autoscaling capacity settings
+    min_capacity:           float = field(default_factory=lambda: float(os.environ.get("LAKEBASE_MIN_CAPACITY", "0.5")))
+    max_capacity:           float = field(default_factory=lambda: float(os.environ.get("LAKEBASE_MAX_CAPACITY", "8.0")))
+    scale_to_zero:          int   = field(default_factory=lambda: int(os.environ.get("LAKEBASE_SCALE_TO_ZERO", "5")))  # 5 min for better visibility
 
     @property
     def dsn(self) -> str:
@@ -142,7 +146,7 @@ def validate_config() -> list:
         "ZEROBUS_CLIENT_ID":        zerobus_cfg.client_id,
         "ZEROBUS_CLIENT_SECRET":    zerobus_cfg.client_secret,
         "LAKEBASE_HOST":            lakebase_cfg.host,
-        "LAKEBASE_DATABASES":       lakebase_cfg.database,
+        "LAKEBASE_INSTANCE":        lakebase_cfg.instance,
     }
 
     for key, value in required.items():
@@ -174,6 +178,11 @@ def print_config():
     print(f"  Lakebase Host       : {lakebase_cfg.host}")
     print(f"  Lakebase Database   : {lakebase_cfg.database}")
     print(f"  Lakebase Schema     : {lakebase_cfg.schema}")
+    print(f"  Lakebase Project    : {lakebase_cfg.instance}")
+    print(f"  Lakebase Endpoint   : {lakebase_cfg.endpoint}")
+    print(f"  Lakebase Min CU     : {lakebase_cfg.min_capacity}")
+    print(f"  Lakebase Max CU     : {lakebase_cfg.max_capacity}")
+    print(f"  Lakebase ScaleToZero: {lakebase_cfg.scale_to_zero} min")
     print(f"  Mobile App          : {app_cfg.mobile_app_name}")
     print(f"  Dashboard App       : {app_cfg.dashboard_app_name}")
     print(f"  Stream Interval     : {zerobus_cfg.stream_interval_ms}ms")

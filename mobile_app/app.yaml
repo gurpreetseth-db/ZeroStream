@@ -18,37 +18,41 @@ env:
   - name: "CATALOG"
     value: "gsethi"
   - name: "SCHEMA"
-    value: "zerobusstream"
+    value: "lakebaseprovisioned"
   - name: "TABLE_NAME"
-    value: "sensor_stream"
+    value: "sensor_zerobus_stream"
   - name: "ZEROBUS_SERVER_ENDPOINT"
     value: "7474644305162519.zerobus.ap-southeast-2.cloud.databricks.com"
   - name: "ZEROBUS_CLIENT_ID"
-    value: "d0728d7c-c73e-465c-94a9-edb317906a6c"
+    value: "6462cfc3-382a-4116-a31c-8e59838e5b0b"
   - name: "ZEROBUS_TOPIC"
-    value: "gsethi_sensor_stream_topic"
+    value: "gsethianzpsa_sensor_stream_topic"
   - name: "DATABRICKS_HOST"
-    value: "https://dbc-f6b4ccd5-9f98.cloud.databricks.com/"
+    value: "https://dbc-94b30a0c-93d3.cloud.databricks.com/"
   - name: "DATABRICKS_WAREHOUSE_ID"
-    value: "38a4adb59fc6d0c0"
+    value: "9ba8d00d604af365"
   - name: "LAKEBASE_INSTANCE"
-    value: "gsethi-lakebase"
+    value: "gsethianzpsa-lakebase"
   - name: "LAKEBASE_HOST"
-    value: "instance-e5dafaa3-52ab-4cb3-a418-9a322934ae70.database.cloud.databricks.com"
+    value: "ep-royal-hill-d6tcobj2.database.ap-southeast-2.cloud.databricks.com"
   - name: "LAKEBASE_PORT"
     value: "5432"
   - name: "LAKEBASE_DATABASES"
-    value: "zerobusstream"
+    value: "lakebaseprovisioned"
   - name: "LAKEBASE_SCHEMA"
-    value: "zerobusstream"
+    value: "lakebaseprovisioned"
   - name: "LAKEBASE_CATALOG"
-    value: "gsethi_lakebase"
+    value: "gsethianzpsa_lakebase"
+  - name: "LAKEBASE_ENDPOINT"
+    value: "projects/gsethianzpsa-lakebase/branches/production/endpoints/primary"
+  - name: "LAKEBASE_TABLE"
+    value: "sensor_zerobus_stream"
   - name: "STREAM_INTERVAL_MS"
     value: "5000"
   - name: "ACTIVE_WINDOW_SECONDS"
     value: "5"
   - name: "MOBILE_APP"
-    value: "gsethi-mobile-app"
+    value: "gsethianzpsa-mobile-app"
 
 # ============================================================================
 # SECRETS: Configure these in Databricks Apps UI
@@ -56,7 +60,7 @@ env:
 # Apps > [app-name] > Settings > Environment Variables
 # - ZEROBUS_CLIENT_SECRET (if using ZeroBus OAuth)
 #
-# For Lakebase access, add as app resource instead:
-# Apps > [app-name] > Settings > Resources > Add Lakebase database
-# This auto-injects: PGHOST, PGDATABASE, PGUSER, PGPASSWORD, PGPORT
+# For Lakebase Autoscaling access, the app uses the Databricks SDK to
+# generate OAuth tokens via w.postgres.generate_database_credential().
+# No manual PG credentials are needed.
 # ============================================================================

@@ -1,6 +1,6 @@
 # ZeroStream
 
-Real-time IoT sensor data streaming demo using **Databricks ZeroBus** (gRPC) → **Delta Lake** → **Lakebase** (managed PostgreSQL) with a mobile device simulator and analytics dashboard — both deployed as **Databricks Apps**.
+Real-time IoT sensor data streaming demo using **Databricks ZeroBus** (gRPC) and **Lakebase Autoscaling** (managed PostgreSQL) with a mobile device simulator and analytics dashboard — both deployed as **Databricks Apps**.
 
 ## Architecture
 
@@ -10,33 +10,41 @@ Real-time IoT sensor data streaming demo using **Databricks ZeroBus** (gRPC) →
 │   (FastAPI + JS)        │         │   (FastAPI + Leaflet.js)     │
 │   • Generate GPS data   │         │   • KPI metrics (WebSocket)  │
 │   • Simulate N devices  │         │   • Client sidebar           │
-│   • Stream via ZeroBus  │         │   • Movement trail map       │
-│                         │         │   • Clickable track points   │
-└───────────┬─────────────┘         └──────────┬───────────────────┘
-            │                                  │
-            │ gRPC (ZeroBus)                   │ asyncpg + OAuth
-            ▼                                  ▼
+│   • Direct PG writes    │         │   • Movement trail map       │
+│                         │         │   • Satellite / Street view  │
+└────────┬────────────────┘         └──────────┬───────────────────┘
+         │                                     │
+         │ psycopg2 + OAuth                    │ psycopg2 + OAuth
+         ▼                                     ▼
     ┌───────────────────────────────────────────────────────────┐
     │                  Databricks Platform                       │
     │                                                           │
-    │  ┌─────────────┐    ┌─────────────┐    ┌───────────────┐ │
-    │  │   ZeroBus   │───▶│ Delta Table │───▶│   Lakebase    │ │
-    │  │   (gRPC)    │    │ sensor_stream│    │ (Synced Table)│ │
-    │  └─────────────┘    └─────────────┘    └───────────────┘ │
+    │  ┌─────────────────────────────────────────────────────┐  │
+    │  │  Lakebase Autoscaling (PostgreSQL)                   │  │
+    │  │  • sensor_stream table (primary data store)          │  │
+    │  │  • Scale-to-zero, auto-resume, branch-based          │  │
+    │  └─────────────────────────────────────────────────────┘  │
     │                                                           │
-    │  ┌────────────────────────────────────────────┐           │
-    │  │ SQL Warehouse (ZeroBus view page queries)  │           │
-    │  └────────────────────────────────────────────┘           │
+    │  ┌─────────────┐    ┌────────────────────────────────┐    │
+    │  │   ZeroBus   │    │ SQL Warehouse (test endpoint)  │    │
+    │  │   (gRPC)    │    └────────────────────────────────┘    │
+    │  └──────┬──────┘                                          │
+    │         ▼                                                 │
+    │  ┌─────────────┐                                          │
+    │  │ Delta Table  │                                         │
+    │  │ sensor_stream│                                         │
+    │  └─────────────┘                                          │
     └───────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
 
-1. **Mobile Simulator** generates GPS sensor data for N simulated devices
-2. Data streams via **ZeroBus gRPC** into a **Delta table** (`sensor_stream`)
-3. A **Synced Table** continuously replicates Delta → **Lakebase** (`sensor_stream_synced`)
-4. **Dashboard App** queries Lakebase via `asyncpg` with OAuth token refresh
-5. Dashboard also has a "ZeroBus View" page that queries the Delta table via SQL Warehouse
+1. **Mobile Simulator** generates realistic GPS sensor data for N simulated devices
+2. Data is written **directly to Lakebase Autoscaling** PostgreSQL via `psycopg2` with OAuth
+3. ZeroBus gRPC also streams into a **Delta table** (`sensor_stream`) for OLAP access
+4. **Dashboard App** queries Lakebase via `psycopg2` with SDK-generated OAuth tokens
+5. Dashboard "ZeroBus Stream Data" view also queries **Lakebase** (same table)
+6. A SQL Warehouse is available for ad-hoc Delta queries (test endpoint)
 
 ---
 
@@ -44,36 +52,38 @@ Real-time IoT sensor data streaming demo using **Databricks ZeroBus** (gRPC) →
 
 ### Mobile Simulator (`mobile_app/`)
 - **FastAPI** web application with JavaScript frontend
-- Simulates multiple mobile devices with realistic GPS movement patterns
-- Generates sensor data: GPS coordinates, speed, battery, heading, signal strength
-- Streams data to Databricks via ZeroBus gRPC protocol
-- Features: adjustable device count slider, start/stop streaming, per-device view
+- Simulates 1–100 mobile devices with realistic random-walk GPS physics
+- Generates sensor data: GPS coordinates, speed, heading, altitude, acceleration, gyroscope, battery, signal strength
+- **Primary write path**: Direct INSERT into Lakebase Autoscaling PostgreSQL
+- **Secondary write path**: ZeroBus gRPC → Delta table
+- 20 pre-seeded cities (Sydney, London, NYC, Tokyo, etc.)
+- Features: adjustable device count slider, start/stop streaming, per-device detail view with map
 
 ### Dashboard App (`dashboard_app/`)
 - **FastAPI** application with real-time WebSocket updates (3s interval)
-- **Two views**:
-  - **Lakebase Dashboard** (main) — reads from Lakebase PostgreSQL
-  - **ZeroBus View** — reads raw stream data from Delta via SQL Warehouse
+- **All data served from Lakebase** — both main dashboard and ZeroBus stream view
 - **Features**:
   - **KPI Bar**: Total events, unique clients, data ingested, access time
   - **Client Sidebar**: All devices with active/inactive badges, sorted by status
-  - **Map Visualization**: Leaflet.js with MarkerCluster, satellite view
+  - **Map Visualization**: Leaflet.js with MarkerCluster, **satellite view** (Esri World Imagery) with street toggle (CartoDB Voyager)
   - **Movement Trails**: Click any client → blue-to-red gradient track with S/E markers
-  - **Clickable Track Points**: Click any point on the trail → detail panel shows that point's timestamp, lat, lon, speed, heading, battery
+  - **Clickable Track Points**: Click any point on the trail → detail panel shows timestamp, lat, lon, speed, heading, battery
   - **Split Layout**: Map shrinks when detail panel appears below; map auto-resizes
+  - **ZeroBus Stream View**: Raw Lakebase data table — all sensor fields, sortable
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `dashboard_app/lakebase_client.py` | Async Lakebase client with OAuth token refresh, connection pooling |
-| `dashboard_app/delta_client.py` | Delta/SQL Warehouse queries (ZeroBus view) |
+| `dashboard_app/lakebase_client.py` | psycopg2 Lakebase client with SDK OAuth token refresh |
+| `dashboard_app/delta_client.py` | Delta/SQL Warehouse queries (test endpoint only) |
 | `dashboard_app/app.py` | FastAPI routes, WebSocket, lifespan management |
-| `dashboard_app/app.yaml` | Databricks Apps config with all env vars |
+| `mobile_app/zerobus_client.py` | ZeroBus publisher + Lakebase direct writer |
+| `mobile_app/data_generator.py` | Realistic sensor simulation with random-walk physics |
 | `config/settings.py` | Centralized dataclass-based configuration |
 
 ### Configuration (`config/`)
-- Centralized settings using Python dataclasses (no pydantic dependency)
+- Centralized settings using Python dataclasses (no pydantic — avoids Rust build issues)
 - Environment variable based: `LAKEBASE_*` vars override `PG*` auto-injected vars
 - Key config: `LakebaseConfig`, `DeltaConfig`, `ZeroBusConfig`, `DatabricksConfig`
 - `active_window_seconds` controls active/inactive badge threshold (default: 120s)
@@ -82,15 +92,15 @@ Real-time IoT sensor data streaming demo using **Databricks ZeroBus** (gRPC) →
 
 ## Lakebase Connection Pattern
 
-The dashboard app connects to **Lakebase Provisioned** using OAuth tokens generated via the Databricks SDK. This is the recommended pattern for Databricks Apps.
+Both apps connect to **Lakebase Autoscaling** using OAuth tokens generated via the Databricks SDK `w.postgres` API. This uses `psycopg2` as the PostgreSQL driver.
 
 ### How It Works
 
 ```
 App starts → SDK generates OAuth token (1hr TTL)
-          → asyncpg pool created with token as password
-          → Background refresh at 55min before expiry
-          → Pool recycled on token refresh
+          → psycopg2 connection created with token as password
+          → Background refresh at 5min before expiry
+          → Connection recycled on token refresh
 ```
 
 ### Token Generation (SDK API)
@@ -100,31 +110,29 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 
-# Lakebase Provisioned — uses w.database API
-cred = w.database.generate_database_credential(
-    request_id=str(uuid.uuid4()),
-    instance_names=["your-lakebase-instance"]
+# Lakebase Autoscaling — uses w.postgres API
+cred = w.postgres.generate_database_credential(
+    endpoint="projects/{project-id}/branches/production/endpoints/primary"
 )
 token = cred.token  # 1-hour OAuth token
-
-# Lakebase Autoscale (different API) — uses w.postgres API
-# cred = w.postgres.generate_database_credential(endpoint="your-endpoint")
 ```
 
-> **Important**: The app uses `w.database` (not `w.postgres`). These are different SDK APIs with different signatures. `w.database` is for Lakebase Provisioned instances.
+> **Important**: The apps use `w.postgres` (not `w.database`). These are different SDK APIs:
+> - `w.postgres` — Lakebase Autoscaling (branch-based endpoints)
+> - `w.database` — Lakebase Provisioned (instance-based)
 
-### Connection Pool
+### Connection Pattern
 
 ```python
-pool = await asyncpg.create_pool(
-    user     = "service-principal-client-id",
-    password = oauth_token,          # from SDK
-    database = "zerobusstream",
-    host     = "instance-xxx.database.cloud.databricks.com",
+import psycopg2
+
+conn = psycopg2.connect(
+    host     = "ep-xxx.database.region.cloud.databricks.com",
     port     = 5432,
-    ssl      = "require",
-    min_size = 1,
-    max_size = 4,
+    dbname   = "lakebaseprovisioned",
+    user     = "service-principal-email-or-client-id",
+    password = oauth_token,   # from SDK
+    sslmode  = "require",
 )
 ```
 
@@ -132,80 +140,59 @@ pool = await asyncpg.create_pool(
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `LAKEBASE_INSTANCE` | Instance name for SDK token generation | `gsethi-lakebase` |
-| `LAKEBASE_HOST` | PostgreSQL host | `instance-xxx.database.cloud.databricks.com` |
+| `LAKEBASE_INSTANCE` | Project name for SDK operations | `myprefix-lakebase` |
+| `LAKEBASE_HOST` | PostgreSQL host (auto-discovered) | `ep-xxx.database.region.cloud.databricks.com` |
 | `LAKEBASE_PORT` | PostgreSQL port | `5432` |
-| `LAKEBASE_DATABASES` | Database name | `zerobusstream` |
-| `LAKEBASE_SCHEMA` | Schema name | `zerobusstream` |
-| `LAKEBASE_TABLE` | Synced table name | `sensor_stream_synced` |
-| `LAKEBASE_USER` | SP client ID (PostgreSQL user) | `d49c82f8-...` |
+| `LAKEBASE_ENDPOINT` | Full endpoint path for token generation | `projects/myprefix-lakebase/branches/production/endpoints/primary` |
+| `LAKEBASE_DATABASES` | Database name | `lakebaseprovisioned` |
+| `LAKEBASE_SCHEMA` | Schema name | `lakebaseprovisioned` |
+| `LAKEBASE_TABLE` | Table name | `sensor_stream` |
 | `ACTIVE_WINDOW_SECONDS` | Threshold for active/inactive badge | `120` |
 
 ---
 
 ## Lakebase Permissions & Role Setup
 
-### Service Principal Role (Critical)
+### Service Principal Roles (Automated)
 
-The dashboard app's service principal must have a **properly provisioned role** in Lakebase with an OAuth security label. This is **not** the same as a raw SQL `CREATE ROLE`.
+Both app service principals need **OAuth-enabled roles** in Lakebase. These are created automatically by `infra/create_sp_roles.py` and granted access by `infra/grant_lakebase_sp_access.py`.
 
-#### Correct way — via Databricks SDK API:
+#### How roles are created — via Databricks SDK API:
 
 ```python
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.database import (
-    DatabaseInstanceRole,
-    DatabaseInstanceRoleIdentityType,
-)
 
 w = WorkspaceClient()
 
-# Create role with OAuth security label
-role = DatabaseInstanceRole(
-    name="your-sp-client-id",
-    identity_type=DatabaseInstanceRoleIdentityType.SERVICE_PRINCIPAL,
-)
-w.database.create_database_instance_role(
-    instance_name="your-lakebase-instance",
-    database_instance_role=role,
+w.postgres.create_role(
+    parent="projects/{project-id}/branches/production/endpoints/primary",
+    role_id="sp-a4615999-7927-4c5e",     # must start with lowercase letter
+    role={
+        "display_name": "Mobile App SP",
+        "auth_method": "LAKEBASE_OAUTH_V1",
+        "identity": {
+            "identity_type": "SERVICE_PRINCIPAL",
+            "id": "a4615999-7927-4c5e-a89d-bb9fa01ce7be",
+        },
+    },
 )
 ```
 
-#### Then grant SQL permissions:
+> **Note**: The `role_id` must match pattern `^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`. If the SP client ID starts with a digit, it's prefixed with `sp-`.
+
+#### SQL grants applied automatically:
 
 ```sql
--- Connect as a superuser (your own user)
-GRANT USAGE ON SCHEMA zerobusstream TO "your-sp-client-id";
-GRANT SELECT ON ALL TABLES IN SCHEMA zerobusstream TO "your-sp-client-id";
+GRANT CONNECT ON DATABASE lakebaseprovisioned TO "sp-a4615999-...";
+GRANT USAGE ON SCHEMA lakebaseprovisioned TO "sp-a4615999-...";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA lakebaseprovisioned TO "sp-a4615999-...";
 ```
 
-> **Warning**: If you create a role via raw SQL (`CREATE ROLE "..."`) instead of the SDK API, the role will **not** have the OAuth security label. The app will fail with:
+> **Warning**: If you create a role via raw SQL (`CREATE ROLE "..."`) instead of the SDK API, it will **not** have the OAuth security label. The app will fail with:
 > ```
 > An oauth token was supplied but no role security label was configured in postgres
 > for role "..." and native postgres login was either not attempted or failed.
 > ```
-> **Fix**: Drop the raw SQL role (revoke its grants first), then re-create via the SDK API.
-
-#### Dropping a conflicting raw-SQL role:
-
-```sql
--- As superuser, connect via your own creds
-GRANT "sp-client-id" TO "your-user@databricks.com";
-REASSIGN OWNED BY "sp-client-id" TO "your-user@databricks.com";
-DROP OWNED BY "sp-client-id";
-REVOKE SELECT ON zerobusstream.sensor_stream_synced
-    FROM "sp-client-id" GRANTED BY "your-user@databricks.com";
-DROP ROLE IF EXISTS "sp-client-id";
-```
-
-Then re-create via SDK and re-grant.
-
-### Listing Existing Roles
-
-```python
-for role in w.database.list_database_instance_roles("your-lakebase-instance"):
-    print(role.name, role.identity_type)
-```
 
 ---
 
@@ -229,12 +216,18 @@ Created by `infra/create_zerobus_credentials.py`:
 4. Stores client ID in `generated_config.env`
 5. Client secret must be set as an app secret in Databricks UI
 
-### ZeroBus View (Dashboard)
+---
 
-The "SHOW DATA SERVED BY ZEROBUS" button opens a separate view that:
-- Queries the **Delta table** directly via SQL Warehouse (not Lakebase)
-- Shows raw streaming data in a table with all sensor fields
-- Uses `delta_client.py` for Databricks SQL queries
+## Vendored Wheels
+
+Both apps include pre-compiled wheels in their `wheels/` directories to run in the **air-gapped Databricks Apps runtime** (no PyPI access):
+
+| Wheel | Purpose |
+|-------|---------|
+| `databricks_sdk-0.97.0-py3-none-any.whl` | Databricks SDK with `w.postgres` API for Lakebase Autoscaling |
+| `psycopg2_binary-2.9.11-cp311-cp311-manylinux2014_x86_64.whl` | Pre-compiled PostgreSQL driver (avoids C build in container) |
+
+Referenced in each app's `requirements.txt` as `./wheels/filename.whl`.
 
 ---
 
@@ -265,12 +258,16 @@ TABLE_NAME=sensor_stream
 
 # ZeroBus
 ZEROBUS_SERVER_ENDPOINT=your-workspace-id.zerobus.region.cloud.databricks.com
+ZEROBUS_TOPIC=${INFRA_PREFIX}_sensor_stream_topic
+ZEROBUS_SP_NAME=${INFRA_PREFIX}-zerobus-service
 
-# Lakebase
+# Lakebase Autoscaling
 LAKEBASE_INSTANCE=${INFRA_PREFIX}-lakebase
-LAKEBASE_DATABASES=zerobusstream
-LAKEBASE_SCHEMA=zerobusstream
-LAKEBASE_CAPACITY=CU_2
+LAKEBASE_DATABASES=lakebaseprovisioned
+LAKEBASE_SCHEMA=lakebaseprovisioned
+LAKEBASE_MIN_CAPACITY=0.5
+LAKEBASE_MAX_CAPACITY=8.0
+LAKEBASE_SCALE_TO_ZERO=300
 
 # Apps
 MOBILE_APP_NAME=${INFRA_PREFIX}-mobile-app
@@ -287,47 +284,26 @@ ACTIVE_WINDOW_SECONDS=120
 bash infra/setup_infra.sh
 ```
 
-Creates: SQL Warehouse, Databricks Apps, Delta tables, Lakebase instance, Synced table, ZeroBus SP, permissions, `app.yaml` files. All values saved to `generated_config.env`.
+This script runs the following steps:
+1. Validate prerequisites (CLI, Python, SDK)
+2. Initialize `generated_config.env` with base configuration
+3. Create SQL Warehouse (PRO, serverless, auto-stop)
+4. Create Databricks Apps (mobile + dashboard) with SP identities
+5. Create Delta tables (catalog, schema, table)
+6. Create Lakebase Autoscaling project (auto-discovers host + endpoint)
+7. Create Lakebase SP OAuth roles + grant PG permissions
+8. Create ZeroBus service principal + OAuth credentials
+9. Grant SQL Warehouse permissions to app SPs
+10. Generate `app.yaml` files for both apps
+11. Save all values to `generated_config.env`
 
-### 4. Create Lakebase SP Role (One-time, post-infra)
-
-After infrastructure setup, create the dashboard app's SP role in Lakebase:
-
-```bash
-python3 -c "
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.database import DatabaseInstanceRole, DatabaseInstanceRoleIdentityType
-
-w = WorkspaceClient()
-sp_client_id = 'YOUR_DASHBOARD_SP_CLIENT_ID'  # from generated_config.env
-
-role = DatabaseInstanceRole(
-    name=sp_client_id,
-    identity_type=DatabaseInstanceRoleIdentityType.SERVICE_PRINCIPAL,
-)
-w.database.create_database_instance_role(
-    instance_name='YOUR_LAKEBASE_INSTANCE',
-    database_instance_role=role,
-)
-print('Role created')
-"
-```
-
-Then grant SELECT:
-
-```bash
-# Connect to Lakebase as superuser and run:
-# GRANT USAGE ON SCHEMA zerobusstream TO "sp-client-id";
-# GRANT SELECT ON ALL TABLES IN SCHEMA zerobusstream TO "sp-client-id";
-```
-
-### 5. Deploy Applications
+### 4. Deploy Applications
 
 ```bash
 bash deployment/deploy_all.sh
 ```
 
-### 6. Quick Redeploy (Code Changes Only)
+### 5. Quick Redeploy (Code Changes Only)
 
 For fast iteration without the full deploy pipeline:
 
@@ -356,26 +332,15 @@ databricks apps deploy "$DASHBOARD_APP" --source-code-path "$REMOTE_DIR" --no-wa
 
 ## Demo Walkthrough
 
-1. **Open Mobile Simulator** → set slider to 5-20 devices
+1. **Open Mobile Simulator** → set slider to 5–20 devices
 2. **Click "Apply"** → creates simulated mobile devices
-3. **Click "Start Streaming"** → devices start sending GPS data via ZeroBus
+3. **Click "Start Streaming"** → devices start sending GPS data directly to Lakebase
 4. **Open Dashboard** → KPIs update via WebSocket every 3 seconds
 5. **Client sidebar** shows active (green) / inactive (amber) devices
 6. **Click any client** → map zooms to trail, detail panel appears below map
-7. **Click any point on the trail** → detail panel updates with that point's data (timestamp, lat, lon, speed, heading, battery)
-8. **Click "SHOW DATA SERVED BY ZEROBUS"** → raw Delta table data view
-
----
-
-## SDK Version Requirements
-
-| Package | Minimum | Recommended |
-|---------|---------|-------------|
-| `databricks-sdk` | `>=0.54.0` | `>=0.81.0` |
-| `asyncpg` | `0.29.0` | `0.29.0` |
-| `fastapi` | `0.111.0` | `0.111.0` |
-
-> The dashboard `requirements.txt` uses `databricks-sdk>=0.54.0`. If you hit missing API errors (`w.database` not found), upgrade to `>=0.81.0`.
+7. **Click any point on the trail** → detail panel updates with timestamp, lat, lon, speed, heading, battery
+8. **Toggle map layer** → switch between Satellite (default) and Street views
+9. **Click "SHOW DATA SERVED BY ZEROBUS"** → raw Lakebase stream data view
 
 ---
 
@@ -384,24 +349,25 @@ databricks apps deploy "$DASHBOARD_APP" --source-code-path "$REMOTE_DIR" --no-wa
 ```
 ZeroStream/
 ├── .env                    # Base configuration (not in git)
-├── generated_config.env    # Generated config from infra setup (not in git)
+├── generated_config.env    # Auto-generated by setup_infra.sh (not in git)
 ├── README.MD
-├── requirements.txt        # Root dependencies
+├── requirements.txt        # Root dev dependencies
 │
 ├── config/                 # Shared configuration
 │   ├── __init__.py
 │   └── settings.py         # Dataclass configs (Lakebase, Delta, ZeroBus, etc.)
 │
 ├── infra/                  # Infrastructure setup (run once)
-│   ├── setup_infra.sh
-│   ├── create_warehouse.py
-│   ├── create_apps.py
-│   ├── create_delta_tables.py
-│   ├── create_lakebase.py
-│   ├── create_synced_table.py
-│   ├── create_zerobus_credentials.py
-│   ├── grant_permissions.py
-│   └── generate_app_yaml.py
+│   ├── setup_infra.sh              # Orchestrator — runs all steps
+│   ├── create_warehouse.py         # SQL Warehouse (PRO, serverless)
+│   ├── create_apps.py              # Databricks Apps + SP identities
+│   ├── create_delta_tables.py      # Catalog, schema, Delta table
+│   ├── create_lakebase.py          # Lakebase Autoscaling project + database + table
+│   ├── create_sp_roles.py          # SP OAuth roles in Lakebase (LAKEBASE_OAUTH_V1)
+│   ├── grant_lakebase_sp_access.py # PG grants (CONNECT, USAGE, ALL PRIVILEGES)
+│   ├── create_zerobus_credentials.py # ZeroBus SP + OAuth secret
+│   ├── grant_permissions.py        # SQL Warehouse CAN_USE for app SPs
+│   └── generate_app_yaml.py        # Inject env vars into app.yaml files
 │
 ├── deployment/             # App deployment
 │   ├── deploy_all.sh
@@ -410,12 +376,13 @@ ZeroStream/
 │   ├── install_dependencies.sh
 │   └── verify_setup.py
 │
-├── dashboard_app/          # Dashboard (Lakebase + ZeroBus views)
+├── dashboard_app/          # Dashboard (Lakebase backend)
 │   ├── app.py              # FastAPI routes, WebSocket, lifespan
 │   ├── app.yaml            # Databricks App config (auto-generated)
-│   ├── lakebase_client.py  # asyncpg + OAuth token refresh
-│   ├── delta_client.py     # SQL Warehouse queries
+│   ├── lakebase_client.py  # psycopg2 + SDK OAuth token refresh
+│   ├── delta_client.py     # SQL Warehouse queries (test endpoint)
 │   ├── requirements.txt
+│   ├── wheels/             # Vendored: databricks-sdk 0.97.0, psycopg2-binary
 │   ├── static/
 │   │   ├── css/dashboard.css
 │   │   └── js/
@@ -423,14 +390,15 @@ ZeroStream/
 │   │       └── zerobus_view.js # ZeroBus data table
 │   └── templates/
 │       ├── dashboard.html      # Main dashboard page
-│       └── zerobus_view.html   # ZeroBus view page
+│       └── zerobus_view.html   # ZeroBus stream data page
 │
 └── mobile_app/             # Mobile Simulator
-    ├── app.py
-    ├── app.yaml
-    ├── data_generator.py
-    ├── zerobus_client.py
+    ├── app.py              # FastAPI routes, WebSocket, streaming loop
+    ├── app.yaml            # Databricks App config (auto-generated)
+    ├── data_generator.py   # Realistic random-walk sensor physics
+    ├── zerobus_client.py   # ZeroBus publisher + Lakebase direct writer
     ├── requirements.txt
+    ├── wheels/             # Vendored: databricks-sdk 0.97.0, psycopg2-binary
     ├── static/
     │   ├── css/styles.css
     │   └── js/
@@ -448,16 +416,16 @@ ZeroStream/
 
 | Technology | Used For |
 |------------|----------|
+| **Lakebase Autoscaling** | Managed PostgreSQL (primary data store) with scale-to-zero |
 | **Databricks ZeroBus** | Low-latency gRPC streaming (mobile → Delta) |
-| **Delta Lake** | ACID storage, source of truth for sensor data |
-| **Lakebase Provisioned** | Managed PostgreSQL with Delta sync for low-latency reads |
-| **Synced Tables** | Continuous Delta → Lakebase replication |
-| **Databricks SQL Warehouse** | Serverless SQL for ZeroBus view queries |
-| **Databricks Apps** | Managed app hosting with SP identity |
-| **asyncpg** | Async PostgreSQL driver for Lakebase |
+| **Delta Lake** | ACID storage for ZeroBus-ingested sensor data |
+| **Databricks SQL Warehouse** | Serverless SQL for ad-hoc Delta queries |
+| **Databricks Apps** | Managed app hosting with SP identity + OAuth |
+| **psycopg2** | PostgreSQL driver for Lakebase (pre-compiled binary wheel) |
+| **databricks-sdk 0.97.0** | `w.postgres` API for Lakebase Autoscaling management |
 | **FastAPI** | Python web framework (both apps) |
-| **Leaflet.js + MarkerCluster** | Interactive map with movement trails |
-| **WebSockets** | Real-time dashboard updates |
+| **Leaflet.js + MarkerCluster** | Interactive map with satellite/street layers |
+| **WebSockets** | Real-time dashboard updates (3s interval) |
 
 ---
 
@@ -478,20 +446,11 @@ databricks sql execute \
 
 # Generate fresh Lakebase OAuth token (for local testing)
 python3 -c "
-from databricks.sdk import WorkspaceClient; import uuid
-w = WorkspaceClient()
-c = w.database.generate_database_credential(
-    request_id=str(uuid.uuid4()),
-    instance_names=['your-lakebase-instance'])
-print(c.token[:30] + '...')
-"
-
-# List Lakebase roles
-python3 -c "
 from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
-for r in w.database.list_database_instance_roles('your-lakebase-instance'):
-    print(r.name, r.identity_type)
+cred = w.postgres.generate_database_credential(
+    endpoint='projects/myprefix-lakebase/branches/production/endpoints/primary')
+print(cred.token[:30] + '...')
 "
 
 # Redeploy dashboard only (fast)
@@ -516,38 +475,32 @@ python3 deployment/verify_setup.py
 ```
 An oauth token was supplied but no role security label was configured
 ```
-**Cause**: Role created via raw SQL instead of SDK API.
-**Fix**: Drop the raw SQL role, recreate via `w.database.create_database_instance_role()` with `identity_type=SERVICE_PRINCIPAL`. See [Lakebase Permissions](#lakebase-permissions--role-setup).
+**Cause**: Role created via raw SQL instead of SDK API, or `auth_method` not set to `LAKEBASE_OAUTH_V1`.
+**Fix**: Re-run `python3 infra/create_sp_roles.py` to create roles via `w.postgres.create_role()`. See [Lakebase Permissions](#lakebase-permissions--role-setup).
 
-### Role Cannot Be Dropped
+### role_id Pattern Violation
 ```
-role "..." cannot be dropped because some objects depend on it
+role_id must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$
 ```
-**Fix**: Revoke grants with `GRANTED BY` clause:
-```sql
-GRANT "sp-id" TO "your-user@databricks.com";
-REASSIGN OWNED BY "sp-id" TO "your-user@databricks.com";
-DROP OWNED BY "sp-id";
-REVOKE SELECT ON schema.table FROM "sp-id" GRANTED BY "your-user@databricks.com";
-DROP ROLE IF EXISTS "sp-id";
-```
+**Cause**: SP client IDs starting with a digit can't be used directly as `role_id`.
+**Fix**: `create_sp_roles.py` automatically prefixes with `sp-` when the ID starts with a digit.
 
-### SDK API Mismatch
+### SDK Too Old for w.postgres
 ```
-unexpected keyword argument 'request_id'
+AttributeError: 'WorkspaceClient' has no attribute 'postgres'
 ```
-**Cause**: Using `w.postgres` (Autoscale API) instead of `w.database` (Provisioned API). They have different method signatures.
-**Fix**: Ensure code uses `w.database.generate_database_credential(instance_names=[...], request_id=...)`.
+**Cause**: Installed `databricks-sdk` is older than 0.97.0.
+**Fix**: The infra scripts automatically bootstrap the vendored 0.97.0 wheel from `dashboard_app/wheels/`. Ensure the wheel file exists.
 
 ### Clients Show as Inactive
-**Cause**: `ACTIVE_WINDOW_SECONDS` too low. If set to `5` and the mobile app streams every 5s, sync latency makes all clients appear inactive.
+**Cause**: `ACTIVE_WINDOW_SECONDS` too low relative to `STREAM_INTERVAL_MS`.
 **Fix**: Set `ACTIVE_WINDOW_SECONDS=120` (2 minutes) in `app.yaml`.
 
 ### Apps Not Showing Data
-- Check ZeroBus connection in mobile app logs: `databricks apps logs $MOBILE_APP`
-- Verify Delta table has rows: `SELECT COUNT(*) FROM your_table`
-- Ensure SQL Warehouse is running (for ZeroBus view)
-- Check Lakebase instance is started (not stopped)
+1. Check mobile app logs: `databricks apps logs $MOBILE_APP`
+2. Verify Lakebase table has rows (connect via psql or dashboard)
+3. Ensure Lakebase project is awake (not scaled to zero — first request wakes it)
+4. Check Lakebase host in `generated_config.env` matches `app.yaml`
 
 ### Map Not Showing Track
 - Hard refresh browser (`Cmd+Shift+R` / `Ctrl+Shift+R`)

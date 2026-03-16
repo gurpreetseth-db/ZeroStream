@@ -256,39 +256,21 @@ def grant_lakebase_permission(
     sp_name: str,
     permission: str = "CAN_USE"
 ) -> bool:
-    """Grant access to Lakebase instance to a service principal.
+    """Grant access to Lakebase Autoscaling project to a service principal.
     
-    Uses the Lakebase database permissions API.
+    Uses the Lakebase Autoscaling project permissions API.
     """
     
-    print(f"  🔓 Granting {permission} on Lakebase '{instance_name}' to {sp_name}...")
+    print(f"  🔓 Granting {permission} on Lakebase project '{instance_name}' to {sp_name}...")
     print(f"     Service Principal Client ID: {sp_client_id}")
     
     try:
-        # First, get the Lakebase instance ID
-        list_url = f"{host}/api/2.0/database/instances"
+        # Try Lakebase Autoscaling project permissions API
+        perm_url = f"{host}/api/2.0/permissions/postgres-projects/{instance_name}"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        
-        resp = requests.get(list_url, headers=headers)
-        if resp.status_code != 200:
-            raise Exception(f"Failed to list Lakebase instances: {resp.status_code}")
-        
-        instances = resp.json().get("database_instances", [])
-        instance_id = None
-        for inst in instances:
-            if inst.get("name") == instance_name:
-                instance_id = inst.get("uid")  # API returns "uid" not "id"
-                break
-        
-        if not instance_id:
-            print(f"  ⚠️  Lakebase instance '{instance_name}' not found")
-            return False
-        
-        # Grant permission via REST API
-        perm_url = f"{host}/api/2.0/permissions/database-instances/{instance_name}"
         payload = {
             "access_control_list": [
                 {
@@ -300,17 +282,23 @@ def grant_lakebase_permission(
         
         resp = requests.patch(perm_url, headers=headers, json=payload)
         
-        if resp.status_code not in (200, 201):
-            raise Exception(f"API error {resp.status_code}: {resp.text}")
+        if resp.status_code in (200, 201):
+            print(f"  ✅ Lakebase project permission granted to {sp_name}")
+            return True
+
+        # Fallback: try provisioned instance API path
+        perm_url = f"{host}/api/2.0/permissions/database-instances/{instance_name}"
+        resp = requests.patch(perm_url, headers=headers, json=payload)
         
-        print(f"  ✅ Lakebase permission granted to {sp_name}")
-        return True
+        if resp.status_code in (200, 201):
+            print(f"  ✅ Lakebase permission granted to {sp_name}")
+            return True
+
+        raise Exception(f"API error {resp.status_code}: {resp.text}")
         
     except Exception as e:
-        print(f"  ⚠️  Could not grant Lakebase permission via API")
-        print(f"     (Lakebase permissions API may require manual configuration)")
+        print(f"  ⚠️  Could not grant Lakebase permission via API: {e}")
         print(f"     Grant manually: Compute → Lakebase → {instance_name} → Permissions → Add {sp_name} → {permission}")
-        return False
         return False
 
 
@@ -453,29 +441,6 @@ def main():
                     ):
                         success_count += 1
         
-        # ─────────────────────────────────────────────────────────────────────
-        # Lakebase Permissions (Dashboard App and ZeroBus SP)
-        # ─────────────────────────────────────────────────────────────────────
-        lakebase_instance = config.get("LAKEBASE_INSTANCE") or os.environ.get("LAKEBASE_INSTANCE")
-        if lakebase_instance:
-            print("\n  Granting Lakebase Permissions...")
-            print("  " + "─" * 45)
-            
-            # Dashboard App needs Lakebase access
-            total_count += 1
-            if grant_lakebase_permission(
-                host, token, lakebase_instance, dashboard_sp_client_id, "Dashboard App"
-            ):
-                success_count += 1
-            
-            # ZeroBus SP needs Lakebase access (for OAuth M2M verification)
-            if zerobus_sp_client_id:
-                total_count += 1
-                if grant_lakebase_permission(
-                    host, token, lakebase_instance, zerobus_sp_client_id, "ZeroBus SP"
-                ):
-                    success_count += 1
-        
         print(f"\n  Summary: {success_count}/{total_count} permissions configured")
         
         if success_count < total_count:
@@ -483,7 +448,6 @@ def main():
             print("     Check the Databricks UI for:")
             print("     1. SQL Warehouses → Permissions")
             print("     2. Data → Catalog → Permissions")
-            print("     3. Compute → Lakebase → Permissions")
         
     except Exception as e:
         print(f"  ❌ Error: {e}", file=sys.stderr)

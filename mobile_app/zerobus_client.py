@@ -1,7 +1,7 @@
 """
-ZeroBus client using Databricks SDK.
-Publishes sensor payloads to ZeroBus topic → Delta table.
-Falls back to direct Delta SQL write if ZeroBus unavailable.
+Sensor data publisher for ZeroStream.
+Writes sensor payloads directly to Lakebase Autoscaling PostgreSQL.
+Falls back to Delta SQL write if Lakebase is unavailable.
 Smart PostgreSQL driver detection - no hard psycopg2 dependency.
 """
 import json
@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config.settings import databricks_cfg, zerobus_cfg, delta_cfg
+from config.settings import databricks_cfg, zerobus_cfg, delta_cfg, lakebase_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -276,126 +276,208 @@ class ZeroBusPublisher:
         return self._total_published
 
 
-# ── Delta Direct Writer ───────────────────────────────────────────────────────
-class DeltaDirectWriter:
+# ── Lakebase Direct Writer ────────────────────────────────────────────────────
+class LakebaseDirectWriter:
     """
-    Writes sensor records directly to Delta table via DBSQL.
-    Used as fallback when ZeroBus is unavailable.
+    Writes sensor records directly to Lakebase Autoscaling PostgreSQL.
+    Uses pg8000 (pure Python) with OAuth token auto-refresh.
     """
 
     def __init__(self):
         self._total_written = 0
+        self._conn = None
+        self._token = None
+        self._token_expires_at = 0.0
+        self._endpoint_name = lakebase_cfg.endpoint or ""
+        self._host = lakebase_cfg.host
+        self._port = lakebase_cfg.port
+        self._database = lakebase_cfg.database
+        self._schema = lakebase_cfg.schema or "public"
+        self._table = lakebase_cfg.table or os.environ.get("TABLE_NAME", "sensor_stream")
+        self._username = os.environ.get("PGUSER") or None
+
+    def _get_ws_client(self):
+        """Get a WorkspaceClient for token generation."""
+        return _get_sdk_client()
+
+    def _refresh_token(self):
+        """Generate or refresh the OAuth token for Lakebase."""
+        if self._token and time.time() < (self._token_expires_at - 300):
+            return  # Token still valid
+
+        logger.info("🔑 Refreshing Lakebase OAuth token...")
+        try:
+            w = self._get_ws_client()
+
+            if not self._endpoint_name:
+                # Discover endpoint from project
+                project_id = lakebase_cfg.instance
+                if project_id:
+                    endpoints = list(w.postgres.list_endpoints(
+                        parent=f"projects/{project_id}/branches/production"
+                    ))
+                    if endpoints:
+                        self._endpoint_name = endpoints[0].name
+                        # Also get host from endpoint if not set
+                        if not self._host:
+                            ep_detail = w.postgres.get_endpoint(name=self._endpoint_name)
+                            self._host = ep_detail.status.hosts.host
+
+            cred = w.postgres.generate_database_credential(
+                endpoint=self._endpoint_name
+            )
+            self._token = cred.token
+            self._token_expires_at = time.time() + 3600
+
+            # Always use the SDK identity that generated the token
+            self._username = w.current_user.me().user_name
+
+            logger.info(f"✅ Lakebase OAuth token refreshed for user '{self._username}'")
+        except Exception as e:
+            logger.warning(f"SDK token refresh failed: {e}")
+            # Fallback: use PGUSER/PGPASSWORD injected by Apps runtime
+            pw = os.environ.get("PGPASSWORD", "")
+            user = os.environ.get("PGUSER", "")
+            if pw and user:
+                self._token = pw
+                self._username = user
+                self._token_expires_at = time.time() + 3600
+                logger.info(f"Using injected PGPASSWORD fallback for user '{user}'")
+            else:
+                raise
+
+    def _get_connection(self):
+        """Get or create a PG connection with fresh token."""
+        import psycopg2
+
+        self._refresh_token()
+
+        # Close stale connection
+        if self._conn is not None:
+            try:
+                cur = self._conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                return self._conn
+            except Exception:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+        # In Apps runtime, PGPASSWORD is auto-injected
+        password = self._token
+
+        self._conn = psycopg2.connect(
+            host=self._host,
+            port=self._port,
+            dbname=self._database,
+            user=self._username,
+            password=password,
+            sslmode="require",
+        )
+        self._conn.autocommit = True
+        logger.info(f"✅ Lakebase PG connected → {self._host}:{self._port}/{self._database}")
+        return self._conn
 
     def write_batch(self, payloads: List[Dict[str, Any]]) -> int:
-        """Insert batch of records into Delta via SQL warehouse."""
+        """Insert batch of records into Lakebase PostgreSQL."""
         if not payloads:
             return 0
 
-        client  = _get_sdk_client()
         written = 0
-
-        # Build VALUES clause - process in chunks of 50
         chunk_size = 50
         for i in range(0, len(payloads), chunk_size):
             chunk = payloads[i:i + chunk_size]
-            written += self._write_chunk(client, chunk)
+            written += self._write_chunk(chunk)
 
         self._total_written += written
         return written
 
-    def _write_chunk(self, client, payloads: List[Dict[str, Any]]) -> int:
-        """Write a single chunk of records."""
-        from databricks.sdk.service.sql import StatementState
+    def _write_chunk(self, payloads: List[Dict[str, Any]]) -> int:
+        """Write a single chunk of records to Lakebase PG."""
+        try:
+            conn = self._get_connection()
+        except Exception as e:
+            logger.error(f"Lakebase connection failed: {e}")
+            return 0
 
-        def _safe_str(v):
-            if v is None:
-                return "NULL"
-            return f"'{str(v).replace(chr(39), chr(39)*2)}'"
+        fqtn = f'"{self._schema}"."{self._table}"'
 
-        def _safe_num(v):
-            if v is None:
-                return "NULL"
-            return str(v)
+        columns = [
+            "event_id", "connection_id", "device_name",
+            "event_timestamp", "event_date", "ingested_at",
+            "latitude", "longitude", "altitude_m",
+            "heading_deg", "pitch_deg", "roll_deg",
+            "accel_x", "accel_y", "accel_z", "accel_magnitude",
+            "gyro_x", "gyro_y", "gyro_z",
+            "speed_kmh", "battery_pct", "signal_strength",
+            "zerobus_topic", "zerobus_offset", "payload_bytes",
+        ]
 
-        def _safe_ts(v):
-            if v is None:
-                return "NULL"
-            ts = str(v).replace("T", " ").replace("Z", "").split("+")[0]
-            return f"TIMESTAMP '{ts}'"
-
-        value_rows = []
-        for p in payloads:
-            value_rows.append(
-                f"({_safe_str(p.get('event_id'))},"
-                f"{_safe_str(p.get('connection_id'))},"
-                f"{_safe_str(p.get('device_name'))},"
-                f"{_safe_ts(p.get('event_timestamp'))},"
-                f"{_safe_ts(p.get('event_date'))},"
-                f"{_safe_ts(p.get('ingested_at'))},"
-                f"{_safe_num(p.get('latitude'))},"
-                f"{_safe_num(p.get('longitude'))},"
-                f"{_safe_num(p.get('altitude_m'))},"
-                f"{_safe_num(p.get('heading_deg'))},"
-                f"{_safe_num(p.get('pitch_deg'))},"
-                f"{_safe_num(p.get('roll_deg'))},"
-                f"{_safe_num(p.get('accel_x'))},"
-                f"{_safe_num(p.get('accel_y'))},"
-                f"{_safe_num(p.get('accel_z'))},"
-                f"{_safe_num(p.get('accel_magnitude'))},"
-                f"{_safe_num(p.get('gyro_x'))},"
-                f"{_safe_num(p.get('gyro_y'))},"
-                f"{_safe_num(p.get('gyro_z'))},"
-                f"{_safe_num(p.get('speed_kmh'))},"
-                f"{_safe_num(p.get('battery_pct'))},"
-                f"{_safe_num(p.get('signal_strength'))},"
-                f"{_safe_str(p.get('zerobus_topic', zerobus_cfg.topic))},"
-                f"{_safe_num(p.get('zerobus_offset', 0))},"
-                f"{_safe_num(p.get('payload_bytes', 256))})"
-            )
-
-        sql = f"""
-            INSERT INTO {delta_cfg.full_name}
-            (event_id, connection_id, device_name,
-             event_timestamp, event_date,ingested_at,
-             latitude, longitude, altitude_m,
-             heading_deg, pitch_deg, roll_deg,
-             accel_x, accel_y, accel_z, accel_magnitude,
-             gyro_x, gyro_y, gyro_z,
-             speed_kmh, battery_pct, signal_strength,
-             zerobus_topic, zerobus_offset, payload_bytes)
-            VALUES {', '.join(value_rows)}
-        """
+        placeholders = ", ".join(["%s"] * len(columns))
+        col_list = ", ".join(columns)
+        insert_sql = f"INSERT INTO {fqtn} ({col_list}) VALUES ({placeholders}) ON CONFLICT (event_id) DO NOTHING"
 
         try:
-            from databricks.sdk.service.sql import StatementState
-            stmt = client.statement_execution.execute_statement(
-                warehouse_id=databricks_cfg.warehouse_id,
-                statement=sql.strip(),
-                wait_timeout="30s",
-            )
+            for p in payloads:
+                # Convert timestamp strings to proper format
+                event_ts = str(p.get("event_timestamp", "")).replace("T", " ").replace("Z", "+00:00")
+                event_date = str(p.get("event_date", ""))[:10]
+                ingested_at = str(p.get("ingested_at", "")).replace("T", " ").replace("Z", "+00:00") if p.get("ingested_at") else None
 
-            # Poll if needed
-            max_wait = 30
-            waited   = 0
-            while stmt.status.state in (
-                StatementState.PENDING,
-                StatementState.RUNNING,
-            ) and waited < max_wait:
-                time.sleep(1)
-                waited += 1
-                stmt = client.statement_execution.get_statement(
-                    stmt.statement_id
-                )
+                params = [
+                    p.get("event_id"),
+                    p.get("connection_id"),
+                    p.get("device_name"),
+                    event_ts,
+                    event_date,
+                    ingested_at,
+                    p.get("latitude"),
+                    p.get("longitude"),
+                    p.get("altitude_m"),
+                    p.get("heading_deg"),
+                    p.get("pitch_deg"),
+                    p.get("roll_deg"),
+                    p.get("accel_x"),
+                    p.get("accel_y"),
+                    p.get("accel_z"),
+                    p.get("accel_magnitude"),
+                    p.get("gyro_x"),
+                    p.get("gyro_y"),
+                    p.get("gyro_z"),
+                    p.get("speed_kmh"),
+                    p.get("battery_pct"),
+                    p.get("signal_strength"),
+                    p.get("zerobus_topic", zerobus_cfg.topic),
+                    p.get("zerobus_offset", 0),
+                    p.get("payload_bytes", 256),
+                ]
+                cursor = conn.cursor()
+                cursor.execute(insert_sql, params)
+                cursor.close()
 
-            if stmt.status.state == StatementState.SUCCEEDED:
-                return len(payloads)
-            else:
-                logger.error(f"Delta write failed: {stmt.status.error}")
-                return 0
+            return len(payloads)
 
         except Exception as e:
-            logger.error(f"Delta write error: {e}")
+            logger.error(f"Lakebase write error: {e}")
+            # Reset connection on error
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
             return 0
+
+    def disconnect(self):
+        """Close PG connection."""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
 
     @property
     def total_written(self) -> int:
@@ -405,41 +487,39 @@ class DeltaDirectWriter:
 # ── Unified Sensor Publisher ──────────────────────────────────────────────────
 class SensorPublisher:
     """
-    Primary  : ZeroBus SDK publisher → Delta table
-    Fallback : Direct Delta SQL write via DBSQL warehouse
+    Primary  : Lakebase Autoscaling PostgreSQL direct write
+    Fallback : ZeroBus SDK publisher (if configured)
     Tracks stats for the UI status display.
     """
 
     def __init__(self):
-        self.zerobus = ZeroBusPublisher()
-        self.delta   = DeltaDirectWriter()
-        self._stats  = {
-            "total_published":   0,
-            "zerobus_published": 0,
-            "delta_published":   0,
-            "errors":            0,
-            "last_publish_ts":   None,
+        self.zerobus  = ZeroBusPublisher()
+        self.lakebase = LakebaseDirectWriter()
+        self._stats   = {
+            "total_published":     0,
+            "lakebase_published":  0,
+            "zerobus_published":   0,
+            "errors":              0,
+            "last_publish_ts":     None,
         }
 
     def publish(self, payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Publish payloads.
-        Uses Delta direct write (reliable) - ZeroBus SDK not yet fully available.
+        Publish payloads directly to Lakebase Autoscaling PostgreSQL.
         """
         if not payloads:
             return dict(self._stats)
 
         start = time.perf_counter()
 
-        # ── Delta direct write (primary method) ───────────────────────────────
-        # ZeroBus SDK is not fully available, so write directly to Delta
-        delta_count = self.delta.write_batch(payloads)
-        self._stats["delta_published"] += delta_count
-        
-        errors = len(payloads) - delta_count
+        # ── Lakebase direct write (primary method) ────────────────────────────
+        lb_count = self.lakebase.write_batch(payloads)
+        self._stats["lakebase_published"] += lb_count
+
+        errors = len(payloads) - lb_count
         self._stats["errors"] += errors
 
-        total = delta_count
+        total = lb_count
         self._stats["total_published"] += total
         self._stats["last_publish_ts"]  = time.time()
         self._stats["last_elapsed_ms"]  = round(
@@ -448,7 +528,7 @@ class SensorPublisher:
 
         if total > 0:
             logger.info(
-                f"Published {total} events to Delta → {delta_cfg.full_name}"
+                f"Published {total} events to Lakebase → {lakebase_cfg.host}/{lakebase_cfg.database}"
             )
 
         return dict(self._stats)

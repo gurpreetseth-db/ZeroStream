@@ -61,7 +61,7 @@ clear
 echo ""
 echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}${CYAN}║         ZeroStream - Full Deployment                  ║${RESET}"
-echo -e "${BOLD}${CYAN}║   Databricks ZeroBus + Synced Tables + Lakebase       ║${RESET}"
+echo -e "${BOLD}${CYAN}║   Databricks ZeroBus + Lakebase                       ║${RESET}"
 echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo -e "  ${BOLD}Configuration:${RESET}"
@@ -84,7 +84,7 @@ bash "${SCRIPT_DIR}/install_dependencies.sh" \
     && ok "Dependencies installed" \
     || err "Dependency installation failed"
 
-# ── Note: Delta tables, Lakebase, and Synced tables are created by infra/setup_infra.sh ──
+# ── Note: Delta tables and Lakebase are created by infra/setup_infra.sh ──
 
 # ── Step 3: Deploy Databricks Apps ─────────────────────────────────────────────
 step "Deploy Databricks Apps"

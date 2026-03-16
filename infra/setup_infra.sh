@@ -8,14 +8,14 @@
 # This script will:
 #   1. Create a SQL Warehouse
 #   2. Create Databricks Apps (mobile, dashboard)
-#   3. Create Lakebase PostgreSQL instance
+#   3. Create Lakebase Autoscaling PostgreSQL project
 #   4. Create ZeroBus service principal with OAuth credentials
-#   5. Grant warehouse and Lakebase permissions to app service principals
+#   5. Grant warehouse permissions to app service principals
 #
 # Reads configuration from .env file:
 #   INFRA_PREFIX, WAREHOUSE_NAME, WAREHOUSE_CLUSTER_SIZE,
 #   MOBILE_APP_NAME, DASHBOARD_APP_NAME,
-#   LAKEBASE_INSTANCE, LAKEBASE_CAPACITY,
+#   LAKEBASE_INSTANCE, LAKEBASE_MIN_CAPACITY, LAKEBASE_MAX_CAPACITY,
 #   APP_COMPUTE_SIZE, ZEROBUS_TOPIC, ZEROBUS_SP_NAME
 # =============================================================================
 set -euo pipefail
@@ -73,7 +73,7 @@ echo -e "  Prefix           : ${CYAN}${INFRA_PREFIX:-not set}${RESET}"
 echo -e "  Warehouse        : ${CYAN}${WAREHOUSE_NAME:-not set}${RESET} (${WAREHOUSE_CLUSTER_SIZE:-Small})"
 echo -e "  Mobile App       : ${CYAN}${MOBILE_APP_NAME:-not set}${RESET}"
 echo -e "  Dashboard App    : ${CYAN}${DASHBOARD_APP_NAME:-not set}${RESET}"
-echo -e "  Lakebase         : ${CYAN}${LAKEBASE_INSTANCE:-not set}${RESET} (${LAKEBASE_CAPACITY:-CU_1})"
+echo -e "  Lakebase         : ${CYAN}${LAKEBASE_INSTANCE:-not set}${RESET} (${LAKEBASE_MIN_CAPACITY:-0.5}-${LAKEBASE_MAX_CAPACITY:-8.0} CU, scale-to-zero: ${LAKEBASE_SCALE_TO_ZERO:-300}s)"
 echo -e "  App Compute      : ${CYAN}${APP_COMPUTE_SIZE:-MEDIUM}${RESET}"
 echo -e "  ZeroBus SP       : ${CYAN}${ZEROBUS_SP_NAME:-not set}${RESET}"
 echo -e "  ZeroBus Topic    : ${CYAN}${ZEROBUS_TOPIC:-not set}${RESET}"
@@ -112,7 +112,7 @@ fi
 # Check databricks-sdk
 if ! python3 -c "import databricks.sdk" 2>/dev/null; then
     warn "databricks-sdk not installed, installing..."
-    pip install databricks-sdk
+    python3 -m pip install databricks-sdk
 fi
 
 ok "All prerequisites validated"
@@ -145,7 +145,9 @@ CONFIG_FILE="${ROOT_DIR}/generated_config.env"
     echo "LAKEBASE_DATABASES=${LAKEBASE_DATABASES:-}"
     echo "LAKEBASE_SCHEMA=${LAKEBASE_SCHEMA:-}"
     echo "LAKEBASE_PORT=${LAKEBASE_PORT:-}"
-    echo "LAKEBASE_CAPACITY=${LAKEBASE_CAPACITY:-}"
+    echo "LAKEBASE_MIN_CAPACITY=${LAKEBASE_MIN_CAPACITY:-0.5}"
+    echo "LAKEBASE_MAX_CAPACITY=${LAKEBASE_MAX_CAPACITY:-8.0}"
+    echo "LAKEBASE_SCALE_TO_ZERO=${LAKEBASE_SCALE_TO_ZERO:-300}"
     echo ""
     echo "# ── App Settings ───────────────────────────────────────────────────"
     echo "STREAM_INTERVAL_MS=${STREAM_INTERVAL_MS:-5000}"
@@ -177,35 +179,34 @@ python3 "${SCRIPT_DIR}/create_delta_tables.py" || err "Failed to create Delta ta
 
 ok "Delta tables created"
 
-# ── Step 5: Create Lakebase Instance ─────────────────────────────────────────
-step "Create Lakebase PostgreSQL Instance"
+# ── Step 5: Create Lakebase Autoscaling Project ─────────────────────────────
+step "Create Lakebase Autoscaling PostgreSQL Project"
 
 if [ -n "${LAKEBASE_INSTANCE:-}" ]; then
-    python3 "${SCRIPT_DIR}/create_lakebase.py" || warn "Failed to create Lakebase instance"
-    ok "Lakebase instance ready"
+    if python3 "${SCRIPT_DIR}/create_lakebase.py"; then
+        ok "Lakebase Autoscaling project ready"
+        # Reload config to pick up LAKEBASE_HOST, LAKEBASE_ENDPOINT from generated_config.env
+        set -a
+        source "$ROOT_DIR/generated_config.env"
+        set +a
+    else
+        warn "Failed to create Lakebase Autoscaling project"
+    fi
 else
     warn "LAKEBASE_INSTANCE not set - skipping Lakebase creation"
 fi
 
-# ── Step 6: Create Lakebase Service Principal & OAuth Credentials ─────────────
-#step "Create Lakebase Service Principal & OAuth Credentials"
+# ── Step 6: Create Lakebase SP OAuth Roles ────────────────────────────────────
+step "Create Lakebase SP OAuth Roles & PG Grants"
 
-#if [ -n "${LAKEBASE_INSTANCE:-}" ]; then
-#    python3 "${SCRIPT_DIR}/create_lakebase_credentials.py" || warn "Lakebase credentials setup had issues — check output above"
-#    ok "Lakebase OAuth credentials configured"
-#else
-#    warn "LAKEBASE_INSTANCE not set - skipping Lakebase credentials"
-#fi
+if [ -n "${LAKEBASE_INSTANCE:-}" ] && [ -n "${LAKEBASE_HOST:-}" ]; then
+    python3 "${SCRIPT_DIR}/create_sp_roles.py" || warn "SP role creation had issues"
+    python3 "${SCRIPT_DIR}/grant_lakebase_sp_access.py" || warn "PG grants had issues"
+    ok "Lakebase SP roles and permissions configured"
+else
+    warn "LAKEBASE_INSTANCE or LAKEBASE_HOST not set - skipping SP role setup"
+fi
 
-# ── Step 7: Create Synced Table ────────────────────────────────────────────────
-#step "Create Lakebase Synced Table (Delta → PostgreSQL)"
-
-#if [ -n "${LAKEBASE_INSTANCE:-}" ]; then
-#    python3 "${SCRIPT_DIR}/create_synced_table.py" || warn "Synced table setup had issues"
-#    ok "Synced table configured"
-#else
-#    warn "LAKEBASE_INSTANCE not set - skipping synced table creation"
-#fi
 
 # ── Step 6: Create ZeroBus Service Principal ───────────────────────────────────
 step "Create ZeroBus Service Principal & Credentials"
@@ -215,7 +216,7 @@ python3 "${SCRIPT_DIR}/create_zerobus_credentials.py" || err "Failed to create Z
 ok "ZeroBus credentials created"
 
 # ── Step 7: Grant Permissions ─────────────────────────────────────────────
-step "Grant Warehouse & Lakebase Permissions to App Service Principals"
+step "Grant Warehouse Permissions to App Service Principals"
 
 python3 "${SCRIPT_DIR}/grant_permissions.py" || warn "Some permissions may need manual setup"
 
