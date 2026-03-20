@@ -255,95 +255,113 @@ def main():
     # ─────────────────────────────────────────────────────────────────────
     # Step 4: Create Delta Table
     # ─────────────────────────────────────────────────────────────────────
-    print("\n  Step 4: Creating Delta Table...")
-    print("  " + "─" * 45)
     
-    total_count += 1
-    create_table_sql = f"""
-    CREATE TABLE `{catalog}`.`{schema}`.`{table}` (
-        event_id          STRING        NOT NULL
-                          COMMENT 'UUID v4 generated per event',
-        connection_id     STRING        NOT NULL
-                          COMMENT 'Simulated device connection ID',
-        device_name       STRING
-                          COMMENT 'Human-readable device label',
-        event_timestamp   TIMESTAMP     NOT NULL
-                          COMMENT 'Event generation time',
-        event_date        DATE          NOT NULL
-                          COMMENT 'Event generation date (device clock)',
-        ingested_at       TIMESTAMP
-                          COMMENT 'Landing time in Delta Lake',
-        latitude          DOUBLE
-                          COMMENT 'GPS latitude decimal degrees',
-        longitude         DOUBLE
-                          COMMENT 'GPS longitude decimal degrees',
-        altitude_m        DOUBLE
-                          COMMENT 'Altitude metres',
-        heading_deg       DOUBLE
-                          COMMENT 'Compass heading 0-360 degrees',
-        pitch_deg         DOUBLE
-                          COMMENT 'Pitch -90 to +90 degrees',
-        roll_deg          DOUBLE
-                          COMMENT 'Roll -180 to +180 degrees',
-        accel_x           DOUBLE
-                          COMMENT 'Acceleration X axis m/s2',
-        accel_y           DOUBLE
-                          COMMENT 'Acceleration Y axis m/s2',
-        accel_z           DOUBLE
-                          COMMENT 'Acceleration Z axis m/s2',
-        accel_magnitude   DOUBLE
-                          COMMENT 'Total acceleration magnitude m/s2',
-        gyro_x            DOUBLE
-                          COMMENT 'Rotation X axis deg/s',
-        gyro_y            DOUBLE
-                          COMMENT 'Rotation Y axis deg/s',
-        gyro_z            DOUBLE
-                          COMMENT 'Rotation Z axis deg/s',
-        speed_kmh         DOUBLE
-                          COMMENT 'Estimated speed km/h',
-        battery_pct       INT
-                          COMMENT 'Simulated battery percentage',
-        signal_strength   INT
-                          COMMENT 'Simulated RSSI dBm',
-        zerobus_topic     STRING
-                          COMMENT 'ZeroBus topic name',
-        zerobus_offset    BIGINT
-                          COMMENT 'ZeroBus message offset',
-        payload_bytes     INT
-                          COMMENT 'Raw payload size bytes'
-    )
-    USING DELTA
-    PARTITIONED BY (event_date)
-    TBLPROPERTIES (
-        'delta.enableChangeDataFeed'             = 'true',
-        'delta.autoOptimize.optimizeWrite'       = 'true',
-        'delta.autoOptimize.autoCompact'         = 'true',
-        'delta.columnMapping.mode'               = 'name',
-        'delta.minReaderVersion'                 = '2',
-        'delta.minWriterVersion'                 = '5',
-        'pipelines.autoOptimize.zOrderCols'      = 'connection_id,event_timestamp',
-        'delta.targetFileSize'                   = '134217728',
-        'delta.checkpointInterval'               = '10'
-    )
-    COMMENT 'ZeroStream sensor events - source of truth'
-    """
+    #print("\n  Step 4: Creating Delta Table...")
+    #print("  " + "─" * 45)
     
-    if execute_sql(client, warehouse_id, create_table_sql.strip(), f"Create table {catalog}.{schema}.{table}", allow_fail=False):
-        success_count += 1
-    else:
-        print(f"  ❌ Failed to create table.")
-        sys.exit(1)
+    #total_count += 1
+    #create_table_sql = f"""
+    #CREATE TABLE `{catalog}`.`{schema}`.`{table}` (
+    #    event_id          STRING        NOT NULL
+    #                      COMMENT 'UUID v4 generated per event',
+    #    connection_id     STRING        NOT NULL
+    #                      COMMENT 'Simulated device connection ID',
+    #    device_name       STRING
+    #                      COMMENT 'Human-readable device label',
+    #    event_timestamp   TIMESTAMP     NOT NULL
+    #                      COMMENT 'Event generation time',
+    #     event_date        DATE          NOT NULL
+    #                      COMMENT 'Event generation date (device clock)',
+    #    ingested_at       TIMESTAMP
+    #                      COMMENT 'Landing time in Delta Lake',
+    #    latitude          DOUBLE
+    #                      COMMENT 'GPS latitude decimal degrees',
+    #    longitude         DOUBLE
+    #                      COMMENT 'GPS longitude decimal degrees',
+    #    altitude_m        DOUBLE
+    #                      COMMENT 'Altitude metres',
+    #   heading_deg       DOUBLE
+    #                      COMMENT 'Compass heading 0-360 degrees',
+    #    pitch_deg         DOUBLE
+    #                      COMMENT 'Pitch -90 to +90 degrees',
+    #    roll_deg          DOUBLE
+    #                      COMMENT 'Roll -180 to +180 degrees',
+    #    accel_x           DOUBLE
+    #                       COMMENT 'Acceleration X axis m/s2',
+    #    accel_y           DOUBLE
+    #                      COMMENT 'Acceleration Y axis m/s2',
+    #    accel_z           DOUBLE
+    #                      COMMENT 'Acceleration Z axis m/s2',
+    #    accel_magnitude   DOUBLE
+    #                      COMMENT 'Total acceleration magnitude m/s2',
+    #    gyro_x            DOUBLE
+    #                      COMMENT 'Rotation X axis deg/s',
+    #    gyro_y            DOUBLE
+    #                      COMMENT 'Rotation Y axis deg/s',
+    #    gyro_z            DOUBLE
+    #                      COMMENT 'Rotation Z axis deg/s',
+    #    speed_kmh         DOUBLE
+    #                      COMMENT 'Estimated speed km/h',
+    #    battery_pct       INT
+    #                      COMMENT 'Simulated battery percentage',
+    #    signal_strength   INT
+    #                      COMMENT 'Simulated RSSI dBm',
+    #    zerobus_topic     STRING
+    #                      COMMENT 'ZeroBus topic name',
+    #    zerobus_offset    BIGINT
+    #                      COMMENT 'ZeroBus message offset',
+    #    payload_bytes     INT
+    #                      COMMENT 'Raw payload size bytes'
+    #)
+    #USING DELTA
+    #PARTITIONED BY (event_date)
+    #TBLPROPERTIES (
+    #   'delta.enableChangeDataFeed'             = 'true',
+    #    'delta.autoOptimize.optimizeWrite'       = 'true',
+    #    'delta.autoOptimize.autoCompact'         = 'true',
+    #    'delta.columnMapping.mode'               = 'name',
+    #    'delta.minReaderVersion'                 = '2',
+    #    'delta.minWriterVersion'                 = '5',
+    #    'pipelines.autoOptimize.zOrderCols'      = 'connection_id,event_timestamp',
+    #    'delta.targetFileSize'                   = '134217728',
+    #    'delta.checkpointInterval'               = '10'
+    #)
+    #COMMENT 'ZeroStream sensor events - source of truth'
+    #"""
+    
+    #if execute_sql(client, warehouse_id, create_table_sql.strip(), f"Create table {catalog}.{schema}.{table}", allow_fail=False):
+    #    success_count += 1
+    #else:
+    #    print(f"  ❌ Failed to create table.")
+    #    sys.exit(1)
+
+
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 5: Disable checkConstraints feature
+    # Step 5: Grant permissions to LAKEBASE_USERNAME (always)
     # ─────────────────────────────────────────────────────────────────────
-    print("\n  Step 5: Disabling checkConstraints feature...")
+    print("\n  Step 5: Granting permissions to LAKEBASE_USERNAME...")
     print("  " + "─" * 45)
-    
-    total_count += 1
-    sql = f"ALTER TABLE `{catalog}`.`{schema}`.`{table}` DROP FEATURE checkConstraints"
-    if execute_sql(client, warehouse_id, sql, "Disable checkConstraints", allow_fail=True):
-        success_count += 1
+    LAKEBASE_USERNAME = os.environ.get("LAKEBASE_USERNAME")
+    if not LAKEBASE_USERNAME:
+        print("  ⚠️  LAKEBASE_USERNAME environment variable not set. Skipping GRANTs.")
+    else:
+        # Grant USE CATALOG (always)
+        sql = f"GRANT USE CATALOG ON CATALOG `{catalog}` TO `{LAKEBASE_USERNAME}`"
+        execute_sql(client, warehouse_id, sql, f"Grant USE CATALOG on {catalog} to {LAKEBASE_USERNAME}", allow_fail=True)
+        # Grant USE, CREATE, SELECT on schema (always)
+        sql = f"GRANT USE SCHEMA, CREATE TABLE, SELECT ON SCHEMA `{catalog}`.`{schema}` TO `{LAKEBASE_USERNAME}`"
+        execute_sql(client, warehouse_id, sql, f"Grant USE SCHEMA, CREATE TABLE, SELECT ON SCHEMA {catalog}.{schema} to {LAKEBASE_USERNAME}", allow_fail=True)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 6: Disable checkConstraints feature
+    # ─────────────────────────────────────────────────────────────────────
+    #print("\n  Step 6: Disabling checkConstraints feature...")
+    #print("  " + "─" * 45)
+    #total_count += 1
+    #sql = f"ALTER TABLE `{catalog}`.`{schema}`.`{table}` DROP FEATURE checkConstraints"
+    #if execute_sql(client, warehouse_id, sql, "Disable checkConstraints", allow_fail=True):
+    #    success_count += 1
 
     # ─────────────────────────────────────────────────────────────────────
     # Summary

@@ -319,6 +319,23 @@ for VER in "0.29.0" "0.28.0" "0.27.0" ""; do
 done
 [ "$ASYNCPG_OK" = false ] && warn "asyncpg failed - pg8000 will handle async ops"
 
+# psycopg - optional
+log "  psycopg (optional sync driver)..."
+if python3 -m pip install \
+    "psycopg[binary,pool]>=3.10.0" \
+    --prefer-binary \
+    --only-binary=:all: \
+    --quiet 2>/dev/null; then
+    ok "psycopg-binary installed"
+elif python3 -m pip install \
+    "psycopg[binary,pool]>=3.10.0" \
+    --prefer-binary \
+    --quiet 2>/dev/null; then
+    ok "psycopg installed"
+else
+    warn "psycopg not available (pg8000 fallback active)"
+fi
+
 # psycopg2 - optional
 log "  psycopg2 (optional sync driver)..."
 if python3 -m pip install \
@@ -335,6 +352,8 @@ elif python3 -m pip install \
 else
     warn "psycopg2 not available (pg8000 fallback active)"
 fi
+
+
 
 # ── Step 7: Final verification ────────────────────────────────────────────────
 log "Step 7/7 - Verifying all imports..."

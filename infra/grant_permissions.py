@@ -375,13 +375,13 @@ def main():
                 ):
                     success_count += 1
                 
-                if table:
-                    total_count += 1
-                    if grant_table_permission(
-                        host, token, catalog, schema, table, dashboard_sp_client_id, "Dashboard App",
-                        ["SELECT"]
-                    ):
-                        success_count += 1
+                #if table:
+                #    total_count += 1
+                #    if grant_table_permission(
+                #        host, token, catalog, schema, table, dashboard_sp_client_id, "Dashboard App",
+                #        ["SELECT"]
+                #    ):
+                #        success_count += 1
         
         # ─────────────────────────────────────────────────────────────────────
         # Unity Catalog Permissions for Mobile App (write access for streaming)
@@ -404,13 +404,13 @@ def main():
                 ):
                     success_count += 1
                 
-                if table:
-                    total_count += 1
-                    if grant_table_permission(
-                        host, token, catalog, schema, table, mobile_sp_client_id, "Mobile App",
-                        ["SELECT", "MODIFY"]
-                    ):
-                        success_count += 1
+                #if table:
+                #    total_count += 1
+                #    if grant_table_permission(
+                #        host, token, catalog, schema, table, mobile_sp_client_id, "Mobile App",
+                #        ["SELECT", "MODIFY"]
+                #    ):
+                #        success_count += 1
         
         # ─────────────────────────────────────────────────────────────────────
         # Unity Catalog Permissions for ZeroBus SP (write access for ingestion)
@@ -430,16 +430,16 @@ def main():
                 if grant_schema_permission(
                     host, token, catalog, schema, zerobus_sp_client_id, "ZeroBus SP",
                     ["USE_SCHEMA"]
-                ):
+                 ):
                     success_count += 1
                 
-                if table:
-                    total_count += 1
-                    if grant_table_permission(
-                        host, token, catalog, schema, table, zerobus_sp_client_id, "ZeroBus SP",
-                        ["SELECT", "MODIFY"]
-                    ):
-                        success_count += 1
+                #if table:
+                #    total_count += 1
+                #    if grant_table_permission(
+                #        host, token, catalog, schema, table, zerobus_sp_client_id, "ZeroBus SP",
+                #        ["SELECT", "MODIFY"]
+                #    ):
+                #        success_count += 1
         
         print(f"\n  Summary: {success_count}/{total_count} permissions configured")
         
