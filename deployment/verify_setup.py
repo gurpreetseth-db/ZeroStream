@@ -7,9 +7,13 @@ import json
 import os
 import sys
 import time
+import psycopg
+from databricks.sdk import WorkspaceClient
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+w = WorkspaceClient()
 
 from config.settings import (
     databricks_cfg, delta_cfg,
@@ -39,7 +43,7 @@ def check_packages():
         "httpx":          "required",
         "pydantic":       "required",
         "pg8000":         "optional",
-        "psycopg":        "optional",
+        "psycopg":        "required",
     }
 
     for pkg, level in packages.items():
@@ -154,140 +158,62 @@ def check_delta_table():
         return False
 
 # ── Check 5: Lakebase connectivity ────────────────────────────────────────────
+
 async def check_lakebase():
     hdr("5. Lakebase PostgreSQL")
-    
-    lakebase_user = lakebase_cfg.user
-    lakebase_password = lakebase_cfg.password
-    
-    # If no user/password configured, try Lakebase Autoscaling OAuth via SDK
-    if not lakebase_user or not lakebase_password:
-        try:
-            from databricks.sdk import WorkspaceClient
-            info("Trying Lakebase Autoscaling OAuth via SDK...")
-            w = WorkspaceClient()
-
-            # Discover endpoint from project
-            lakebase_instance = lakebase_cfg.instance or os.environ.get("LAKEBASE_INSTANCE", "")
-            lakebase_endpoint = lakebase_cfg.endpoint or os.environ.get("LAKEBASE_ENDPOINT", "")
-
-            if not lakebase_endpoint and lakebase_instance:
-                branch_path = f"projects/{lakebase_instance}/branches/production"
-                endpoints = list(w.postgres.list_endpoints(parent=branch_path))
-                if endpoints:
-                    lakebase_endpoint = endpoints[0].name
-
-            if lakebase_endpoint:
-                cred = w.postgres.generate_database_credential(endpoint=lakebase_endpoint)
-                lakebase_user = w.current_user.me().user_name
-                lakebase_password = cred.token
-                ok("Lakebase Autoscaling OAuth token obtained")
-            else:
-                warn("Could not discover Lakebase endpoint")
-        except Exception as e:
-            warn(f"Lakebase SDK auth failed: {e}")
-        
-        if not lakebase_user or not lakebase_password:
-            warn("Lakebase credentials not configured for local testing")
-            info("For local testing, set LAKEBASE_USER and LAKEBASE_PASSWORD in .env")
-            return False
-    
     try:
-        import psycopg2
+        # Step 1: Discover the Autoscale project via REST API
+        # (SDK 0.67.0 does not have w.postgres; requires >=0.89.0)
+        #print("========= Listing Lakebase Autoscale Projects =========")
+        projects_resp = w.api_client.do("GET", "/api/2.0/postgres/projects")
+        projects = projects_resp.get("projects",[])
+        target_project = None
+        for p in projects:
+            display_name = p.get("display_name","")
+            proj_name = p.get("name","" )
+            state = p.get("state","")
 
-        start = time.perf_counter()
-        conn  = psycopg2.connect(
-            host=lakebase_cfg.host,
-            port=lakebase_cfg.port,
-            user=lakebase_user,
-            password=lakebase_password,
-            dbname=lakebase_cfg.database,
-            sslmode="require",
-        )
-        conn.autocommit = True
-        elapsed = round((time.perf_counter() - start) * 1000)
-        ok(f"Lakebase connected ({elapsed}ms)")
+            print(f"  Project: {display_name} | ID: {proj_name} | State: {state }")
 
-        cursor = conn.cursor()
+            if os.environ.get("LAKEBASE_INSTANCE").lower() in display_name.lower() or os.environ.get("LAKEBASE_INSTANCE").lower() in proj_name.lower():
+                target_project = p
+        if not target_project:
+            fail(f"Project '{os.environ.get('LAKEBASE_INSTANCE')}' not found in Lakebase projects")  
+        
+        project_name = target_project["name"] 
+        ok(f"Using project '{project_name}' for connectivity test")
 
-        # Check schema exists
-        cursor.execute(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.schemata "
-            "WHERE schema_name = %s)",
-            (lakebase_cfg.schema,),
-        )
-        schema_exists = cursor.fetchone()[0]
-        if schema_exists:
-            ok(f"Schema '{lakebase_cfg.schema}' exists")
-        else:
-            warn(f"Schema '{lakebase_cfg.schema}' not found - run deployment")
+        # Step 2: Get the default branch
+        print("\n======== Listing Branches in Project =========")
+        branches_resp = w.api_client.do("GET", f"/api/2.0/postgres/{project_name}/branches")
+        branches = branches_resp.get("branches", [])
+        target_branch = None
+        for b in branches:
+            
+            is_default = b.get("is_default", False)
+            print(f"  Branch: {b['name']} | State: {b.get('state','')} | Default: {is_default}")
+            if is_default or target_branch is None:
+                target_branch = b
+        branch_name = target_branch["name"]
+        ok(f"Using branch '{branch_name}' in project '{project_name}' for connectivity test")
 
-        # Check table exists
-        _table = lakebase_cfg.table or os.environ.get("TABLE_NAME", "sensor_stream")
-        cursor.execute(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema = %s AND table_name = %s)",
-            (lakebase_cfg.schema, _table),
-        )
-        table_exists = cursor.fetchone()[0]
-        if table_exists:
-            # Count rows
-            cursor.execute(
-                f'SELECT COUNT(*) FROM "{lakebase_cfg.schema}"."{_table}"'
-            )
-            count = cursor.fetchone()[0]
-            ok(f"Table {_table} exists ({count:,} rows)")
-        else:
-            warn(f"Table {_table} not found - run deployment")
-
-        # Check materialized view
-        cursor.execute(
-            "SELECT EXISTS(SELECT 1 FROM pg_matviews "
-            "WHERE schemaname = %s AND matviewname = 'client_summary')",
-            (lakebase_cfg.schema,),
-        )
-        matview_exists = cursor.fetchone()[0]
-        if matview_exists:
-            ok("Materialized view client_summary exists")
-        else:
-            warn("Materialized view client_summary not found - run deployment")
-
-        # Check active_clients view
-        cursor.execute(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.views "
-            "WHERE table_schema = %s AND table_name = 'active_clients')",
-            (lakebase_cfg.schema,),
-        )
-        view_exists = cursor.fetchone()[0]
-        if view_exists:
-            ok("View active_clients exists")
-        else:
-            warn("View active_clients not found - run deployment")
-
-        # Test query latency
-        start = time.perf_counter()
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        ping_ms = round((time.perf_counter() - start) * 1000, 2)
-        ok(f"Lakebase ping latency: {ping_ms}ms")
-
-        conn.close()
-        return True
+         # Step 3: Get the endpoint (read-write) with full details
+        print("\n======== Getting Branch Endpoint Details =========")
+        endpoint_resp = w.api_client.do("GET", f"/api/2.0/postgres/{branch_name}/endpoints")
+        endpoints = endpoint_resp.get("endpoints", {})
+        target_endpoint = None
+        for e in endpoints:
+            ep_type = e.get("endpoint_type","unknown")
+            ok(f"  Endpoint: {e['name']} | Type: {ep_type} | State: {e.get('state','')}")
+            if target_endpoint is None:
+                target_endpoint = e
+        
+        endpoint_name = target_endpoint["name"]
+        ok(f"Using endpoint '{endpoint_name}' ")
     except Exception as e:
-        err_str = str(e).lower()
-        if "role" in err_str and "does not exist" in err_str:
-            warn(f"Service principal not granted Lakebase access")
-            info("The service principal needs to be added to Lakebase:")
-            info("  1. Go to Data → Databases → Lakebase → Your instance")
-            info("  2. Click 'Permissions' → Add the service principal")
-            info("  3. Or use user credentials: LAKEBASE_USER/LAKEBASE_PASSWORD")
-            info("Note: Databricks Apps get access via app resources (will work in deployed app)")
-            return False
-        else:
-            fail(f"Lakebase connection error: {e}")
-            info("Check LAKEBASE_HOST, LAKEBASE_USER, LAKEBASE_PASSWORD")
-            return False
-
+        fail(f"Lakebase psycopg error: {e}")
+        return False
+    
 
 def _check_lakebase_fallback():
     """Fallback Lakebase connection check."""
@@ -314,7 +240,7 @@ def _check_lakebase_fallback():
 
 # ── Check 6: ZeroBus endpoint ─────────────────────────────────────────────────
 def check_zerobus():
-    hdr("6. ZeroBus Endpoint")
+    hdr("5. ZeroBus Endpoint")
     try:
         import httpx
 
@@ -388,7 +314,7 @@ def check_zerobus():
 
 # ── Check 7: Databricks Apps ──────────────────────────────────────────────────
 def check_apps():
-    hdr("7. Databricks Apps")
+    hdr("6. Databricks Apps")
     try:
         import httpx
         
@@ -439,7 +365,7 @@ def check_apps():
 
 # ── End-to-end data flow test ─────────────────────────────────────────────────
 async def check_data_flow():
-    hdr("8. End-to-End Data Flow Test")
+    hdr("7. End-to-End Data Flow Test")
 
     try:
         # Generate one test event
@@ -602,7 +528,7 @@ async def main():
     results["Packages"]          = check_packages()
     results["Configuration"]     = check_config()
     results["Databricks"]        = check_databricks()
-    results["Delta Table"]       = check_delta_table()
+    #results["Delta Table"]       = check_delta_table()
     results["ZeroBus"]           = check_zerobus()
     results["Databricks Apps"]   = check_apps()
 

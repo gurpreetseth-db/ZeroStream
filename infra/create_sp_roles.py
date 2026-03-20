@@ -50,6 +50,10 @@ sps = [
     (os.environ.get("DASHBOARD_APP_SP_CLIENT_ID", ""), "Dashboard"),
 ]
 
+
+# Track the Dashboard app's pg_role for UC permissions
+dashboard_pg_role = None
+
 for sp_client_id, name in sps:
     if not sp_client_id:
         print(f"\n  Skipping {name} — no SP_CLIENT_ID set")
@@ -70,9 +74,13 @@ for sp_client_id, name in sps:
         )
         result = op.wait()
         print(f"  ✅ Created: {result.name}  auth={result.status.auth_method}")
+        if name == "Dashboard":
+            dashboard_pg_role = sp_client_id
     except Exception as e:
         if "already exists" in str(e).lower():
             print(f"  ℹ️  Role already exists")
+            if name == "Dashboard":
+                dashboard_pg_role = sp_client_id
         else:
             print(f"  ❌ Failed: {e}")
 
@@ -82,5 +90,7 @@ for r in w.postgres.list_roles(parent=branch):
     ident = getattr(r.status, "identity_type", "?")
     pg = getattr(r.status, "postgres_role", "?")
     print(f"  {r.name}  auth={auth}  identity={ident}  pg_role={pg}")
+
+
 
 print("\nDone.")

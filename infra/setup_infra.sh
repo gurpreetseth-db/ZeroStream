@@ -196,7 +196,7 @@ else
     warn "LAKEBASE_INSTANCE not set - skipping Lakebase creation"
 fi
 
-# ── Step 6: Create Lakebase SP OAuth Roles ────────────────────────────────────
+# ── Step 6: Create Lakebase SP OAuth Roles & PG Grants ────────────────────────────────────
 step "Create Lakebase SP OAuth Roles & PG Grants"
 
 if [ -n "${LAKEBASE_INSTANCE:-}" ] && [ -n "${LAKEBASE_HOST:-}" ]; then
@@ -207,22 +207,21 @@ else
     warn "LAKEBASE_INSTANCE or LAKEBASE_HOST not set - skipping SP role setup"
 fi
 
-
-# ── Step 6: Create ZeroBus Service Principal ───────────────────────────────────
+# ── Step 7: Create ZeroBus Service Principal ───────────────────────────────────
 step "Create ZeroBus Service Principal & Credentials"
 
 python3 "${SCRIPT_DIR}/create_zerobus_credentials.py" || err "Failed to create ZeroBus credentials"
 
 ok "ZeroBus credentials created"
 
-# ── Step 7: Grant Permissions ─────────────────────────────────────────────
+# ── Step 8: Grant Permissions ─────────────────────────────────────────────
 step "Grant Warehouse Permissions to App Service Principals"
 
 python3 "${SCRIPT_DIR}/grant_permissions.py" || warn "Some permissions may need manual setup"
 
 ok "Permissions configured"
 
-# ── Step 8: Generate app.yaml files ────────────────────────────────────────────
+# ── Step 9: Generate app.yaml files ────────────────────────────────────────────
 step "Generate app.yaml Configuration Files"
 
 python3 "${SCRIPT_DIR}/generate_app_yaml.py" || err "Failed to generate app.yaml files"
