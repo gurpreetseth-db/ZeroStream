@@ -141,6 +141,23 @@ async def _close_conn():
         _conn = None
 
 
+def _reset_conn_sync():
+    """Reset the connection from a sync/thread context (e.g. inside _run()).
+
+    Safely closes the stale connection and sets _conn to None so the next
+    get_conn() call will create a fresh one.  This is called when a query
+    hits InterfaceError / OperationalError inside asyncio.to_thread().
+    """
+    global _conn
+    old = _conn
+    _conn = None
+    if old is not None:
+        try:
+            old.close()
+        except Exception:
+            pass  # already broken — just discard
+
+
 def _get_connection_sync():
     """Create a new psycopg2 connection (synchronous). Called from thread."""
     global _conn
@@ -235,19 +252,49 @@ def _pg_to_dbapi(sql: str) -> str:
     return re.sub(r'\$\d+', '%s', sql)
 
 
+_MAX_QUERY_RETRIES = 1  # retry once on stale connection
+
+
 async def fetch_rows(sql: str, *args) -> List[Dict[str, Any]]:
-    """Execute a query and return results as a list of JSON-safe dicts."""
-    conn = await get_conn()
+    """Execute a query and return results as a list of JSON-safe dicts.
 
-    def _run():
-        cursor = conn.cursor()
-        cursor.execute(_pg_to_dbapi(sql), args if args else None)
-        if cursor.description is None:
-            return []
-        cols = [d[0] for d in cursor.description]
-        return [_json_row(dict(zip(cols, row))) for row in cursor.fetchall()]
+    Retries once on psycopg2.InterfaceError or OperationalError (stale /
+    server-closed connection).  On retry the broken connection is discarded
+    and get_conn() transparently creates a fresh one.
+    """
+    last_err: Optional[Exception] = None
 
-    return await asyncio.to_thread(_run)
+    for attempt in range(_MAX_QUERY_RETRIES + 1):
+        conn = await get_conn()
+
+        def _run(c=conn):
+            cursor = c.cursor()
+            cursor.execute(_pg_to_dbapi(sql), args if args else None)
+            if cursor.description is None:
+                return []
+            cols = [d[0] for d in cursor.description]
+            return [_json_row(dict(zip(cols, row))) for row in cursor.fetchall()]
+
+        try:
+            return await asyncio.to_thread(_run)
+        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            last_err = e
+            logger.warning(
+                f"Lakebase query failed (attempt {attempt + 1}/"
+                f"{_MAX_QUERY_RETRIES + 1}): {e}"
+            )
+            # Discard the broken connection so get_conn() will reconnect
+            _reset_conn_sync()
+
+            if attempt < _MAX_QUERY_RETRIES:
+                logger.info("Retrying with fresh connection...")
+                continue
+            # All retries exhausted — raise the last error
+            logger.error(f"Lakebase query failed after {_MAX_QUERY_RETRIES + 1} attempts")
+            raise
+
+    # Should not reach here, but satisfy type checker
+    raise last_err  # type: ignore[misc]
 
 
 # ── Lakebase queries ───────────────────────────────────────────────────────────
