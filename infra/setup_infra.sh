@@ -50,7 +50,7 @@ err()     { echo -e "  ${RED}❌${RESET} $*"; exit 1; }
 divider() { echo -e "  ${CYAN}─────────────────────────────────────────────────${RESET}"; }
 
 STEP=0
-TOTAL=11
+TOTAL=10
 
 step() {
     STEP=$((STEP + 1))
@@ -104,14 +104,20 @@ if ! command -v databricks &>/dev/null; then
     err "Databricks CLI not installed. Run: pip install databricks-cli"
 fi
 
+# Activate venv if it exists (avoids externally-managed-environment errors)
+if [ -f "${ROOT_DIR}/.venv/bin/activate" ]; then
+    source "${ROOT_DIR}/.venv/bin/activate"
+    ok "Activated venv: ${ROOT_DIR}/.venv"
+fi
+
 # Check Python
 if ! command -v python3 &>/dev/null; then
     err "Python 3 not found"
 fi
 
-# Check databricks-sdk
+# Check databricks-sdk (vendored wheel is used by scripts that need w.postgres)
 if ! python3 -c "import databricks.sdk" 2>/dev/null; then
-    warn "databricks-sdk not installed, installing..."
+    warn "databricks-sdk not installed, installing into venv..."
     python3 -m pip install databricks-sdk
 fi
 
@@ -200,12 +206,30 @@ fi
 # ── Step 6: Create Lakebase SP OAuth Roles & PG Grants ────────────────────────────────────
 step "Create Lakebase SP OAuth Roles & PG Grants"
 
+# Re-source config to pick up LAKEBASE_HOST written by Step 5
+if [ -f "$CONFIG_FILE" ]; then
+    set -a
+    source "$CONFIG_FILE"
+    set +a
+fi
+
 if [ -n "${LAKEBASE_INSTANCE:-}" ] && [ -n "${LAKEBASE_HOST:-}" ]; then
-    python3 "${SCRIPT_DIR}/create_sp_roles.py" || warn "SP role creation had issues"
+    # 1. Create Lakebase OAuth roles for app service principals (M2M auth)
+    log "  Creating Lakebase OAuth roles for App SPs..."
+    python3 "${SCRIPT_DIR}/create_sp_roles.py" || warn "SP role creation had issues (roles may already exist)"
+
+    # 2. Grant PG-level permissions (CONNECT, USAGE, table access)
+    log "  Granting PG-level permissions to App SPs..."
     python3 "${SCRIPT_DIR}/grant_lakebase_sp_access.py" || warn "PG grants had issues"
+
     ok "Lakebase SP roles and permissions configured"
+    ok "Dashboard SP (${DASHBOARD_APP_SP_CLIENT_ID:-unknown}) → Lakebase OAuth + PG grants"
+    ok "Mobile SP (${MOBILE_APP_SP_CLIENT_ID:-unknown}) → Lakebase OAuth + PG grants"
 else
     warn "LAKEBASE_INSTANCE or LAKEBASE_HOST not set - skipping SP role setup"
+    warn "Run these manually after Lakebase is provisioned:"
+    warn "  python3 infra/create_sp_roles.py"
+    warn "  python3 infra/grant_lakebase_sp_access.py"
 fi
 
 # ── Step 7: Create ZeroBus Service Principal ───────────────────────────────────

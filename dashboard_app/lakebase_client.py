@@ -2,11 +2,16 @@
 Lakebase PostgreSQL client for ZeroStream dashboard.
 Uses psycopg2 for queries to the Lakebase Autoscaling table.
 
-Authentication:
-  In Databricks Apps runtime: uses auto-injected PGUSER/PGPASSWORD env vars.
-  Locally: uses Databricks SDK w.postgres.generate_database_credential() to
-  obtain OAuth tokens. Tokens expire every hour and are auto-refreshed at the
-  55-minute mark.
+Authentication (M2M OAuth — automatic token refresh):
+  In Databricks Apps runtime: WorkspaceClient auto-authenticates using the
+  app's service principal (DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET
+  are injected by the runtime). The SP's application_id (= DATABRICKS_CLIENT_ID)
+  is used as the PG username. OAuth tokens are generated via
+  w.postgres.generate_database_credential() and refreshed automatically
+  5 minutes before expiry.
+
+  Locally: same SDK call, but authenticates using DATABRICKS_HOST + DATABRICKS_TOKEN.
+  PG username = workspace user email.
 """
 import asyncio
 import logging
@@ -37,41 +42,66 @@ logger = logging.getLogger("lakebase_client")
 _conn:             Optional[psycopg2.extensions.connection] = None
 _conn_lock:        asyncio.Lock                             = asyncio.Lock()
 _current_token:    str                                      = ""
-_current_user:     str                                      = ""      # PG username from SDK
+_current_user:     str                                      = ""      # PG username
 _token_expires_at: float                                    = 0.0     # unix timestamp
 _REFRESH_BUFFER:   int                                      = 300     # refresh 5 min before expiry
+_endpoint_name_cache: str                                   = ""      # cached endpoint name
 
-# Databricks SDK client (lazy init — only used for local dev)
+# Databricks SDK client (lazy init)
 _ws_client = None
 
 
 def _get_ws_client() -> WorkspaceClient:
-    """Return a singleton WorkspaceClient. Auto-authenticates via env vars in Databricks Apps."""
+    """Return a singleton WorkspaceClient.
+
+    In Databricks Apps: auto-authenticates via M2M OAuth using injected
+    DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET env vars.
+    Locally: uses DATABRICKS_HOST + DATABRICKS_TOKEN.
+    """
     global _ws_client
     if _ws_client is None:
         _ws_client = WorkspaceClient()
-        logger.info("✅ Databricks WorkspaceClient initialised")
+        auth_type = "M2M/SP" if os.environ.get("DATABRICKS_CLIENT_ID") else "PAT/user"
+        logger.info(f"Databricks WorkspaceClient initialised (auth: {auth_type})")
     return _ws_client
 
 
-# ── Token management ───────────────────────────────────────────────────────────
+def _resolve_pg_username(w) -> str:
+    """Determine the correct PG username for the current auth context.
 
-def _token_needs_refresh() -> bool:
-    """Return True if token is missing, expired, or within the refresh buffer window."""
-    if not _current_token:
-        return True
-    return time.time() >= (_token_expires_at - _REFRESH_BUFFER)
-
-
-def _refresh_token() -> str:
+    - Databricks Apps (SP): DATABRICKS_CLIENT_ID env var = SP application_id = PG role name
+    - Local dev (user): workspace user email from w.current_user.me()
     """
-    Use the Databricks SDK to generate a fresh OAuth token for Lakebase Autoscaling.
-    Updates module-level _current_token and _token_expires_at.
+    # In Databricks Apps, the runtime injects DATABRICKS_CLIENT_ID which is the
+    # SP's application_id (UUID). This matches the Lakebase PG role name.
+    sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
+    if sp_client_id:
+        logger.info(f"PG username from SP application_id: {sp_client_id}")
+        return sp_client_id
 
-    w.postgres.generate_database_credential() is the official SDK method for
-    Lakebase Autoscaling — it handles OAuth plumbing and returns a short-lived token.
-    """
-    global _current_token, _current_user, _token_expires_at
+    # Fallback: interactive user context (local dev)
+    try:
+        me = w.current_user.me()
+        username = me.user_name
+        logger.info(f"PG username from workspace user: {username}")
+        return username
+    except Exception as e:
+        logger.warning(f"Could not resolve PG username from current_user: {e}")
+        # Last resort: check config
+        if lakebase_cfg.user:
+            return lakebase_cfg.user
+        raise RuntimeError(
+            "Cannot determine PG username. Set DATABRICKS_CLIENT_ID (Apps) "
+            "or DATABRICKS_TOKEN (local dev)."
+        )
+
+
+def _resolve_endpoint_name(w) -> str:
+    """Get the Lakebase endpoint name, discovering it if needed."""
+    global _endpoint_name_cache
+
+    if _endpoint_name_cache:
+        return _endpoint_name_cache
 
     endpoint_name = lakebase_cfg.endpoint
     project_id = lakebase_cfg.instance
@@ -81,10 +111,6 @@ def _refresh_token() -> str:
             "LAKEBASE_ENDPOINT or LAKEBASE_INSTANCE is not set. "
             "Run infra/setup_infra.sh to provision the Lakebase project."
         )
-
-    logger.info(f"🔄 Refreshing Lakebase OAuth token for project '{project_id}'...")
-
-    w = _get_ws_client()
 
     # Discover endpoint if not explicitly configured
     if not endpoint_name and project_id:
@@ -98,6 +124,36 @@ def _refresh_token() -> str:
                 f"No endpoints found for projects/{project_id}/branches/production"
             )
 
+    _endpoint_name_cache = endpoint_name
+    return endpoint_name
+
+
+# ── Token management ───────────────────────────────────────────────────────────
+
+def _token_needs_refresh() -> bool:
+    """Return True if token is missing, expired, or within the refresh buffer window."""
+    if not _current_token:
+        return True
+    return time.time() >= (_token_expires_at - _REFRESH_BUFFER)
+
+
+def _refresh_token() -> str:
+    """Generate a fresh Lakebase OAuth token via the Databricks SDK.
+
+    Uses w.postgres.generate_database_credential() which handles OAuth
+    plumbing and returns a short-lived PG-compatible token.
+
+    The PG username is resolved via _resolve_pg_username():
+    - Apps runtime (M2M): SP's application_id from DATABRICKS_CLIENT_ID
+    - Local dev: workspace user email
+    """
+    global _current_token, _current_user, _token_expires_at
+
+    w = _get_ws_client()
+    endpoint_name = _resolve_endpoint_name(w)
+
+    logger.info(f"Refreshing Lakebase OAuth token (endpoint: {endpoint_name})...")
+
     cred = w.postgres.generate_database_credential(
         endpoint=endpoint_name,
     )
@@ -105,27 +161,22 @@ def _refresh_token() -> str:
     if not cred or not cred.token:
         raise RuntimeError("generate_database_credential() returned no token")
 
-    _current_token    = cred.token
-    _current_user     = w.current_user.me().user_name
-    # SDK doesn't return expires_in, so assume 1 hour (standard Databricks token TTL)
-    _token_expires_at = time.time() + 3600
+    _current_token = cred.token
+    _current_user = _resolve_pg_username(w)
 
-    logger.info(f"✅ Lakebase OAuth token refreshed for user '{_current_user}' (valid ~1hr)")
-    return _current_token
-
-
-def _use_injected_fallback():
-    """Fallback: use PGUSER/PGPASSWORD injected by the Databricks Apps resource block."""
-    global _current_token, _current_user, _token_expires_at
-    pw = os.environ.get("PGPASSWORD", "")
-    user = os.environ.get("PGUSER", "")
-    if pw and user:
-        _current_token = pw
-        _current_user = user
-        _token_expires_at = time.time() + 3600  # assume 1hr
-        logger.info(f"Using injected PGPASSWORD fallback for user '{user}'")
+    # Use expires_at from credential if available, else assume 1 hour
+    if hasattr(cred, "expires_at") and cred.expires_at:
+        try:
+            exp = datetime.fromisoformat(str(cred.expires_at).replace("Z", "+00:00"))
+            _token_expires_at = exp.timestamp()
+        except Exception:
+            _token_expires_at = time.time() + 3600
     else:
-        raise RuntimeError("No SDK token and no PGPASSWORD available")
+        _token_expires_at = time.time() + 3600
+
+    ttl_min = int((_token_expires_at - time.time()) / 60)
+    logger.info(f"Lakebase OAuth token refreshed for '{_current_user}' (valid ~{ttl_min}min)")
+    return _current_token
 
 
 # ── Connection management ──────────────────────────────────────────────────────
@@ -158,17 +209,27 @@ def _reset_conn_sync():
             pass  # already broken — just discard
 
 
+def _force_token_reset():
+    """Invalidate the cached token so the next get_conn() triggers a refresh."""
+    global _current_token, _token_expires_at
+    _current_token = ""
+    _token_expires_at = 0.0
+
+
 def _get_connection_sync():
     """Create a new psycopg2 connection (synchronous). Called from thread."""
     global _conn
 
-    # Use the SDK-authenticated identity that generated the token
-    pg_user = _current_user or lakebase_cfg.user
-
-    # Always use the SDK-refreshed OAuth token
+    pg_user = _current_user
     pg_password = _current_token
 
-    logger.info(f"Creating Lakebase connection → {lakebase_cfg.host}:{lakebase_cfg.port}")
+    if not pg_user or not pg_password:
+        raise RuntimeError(
+            f"Missing PG credentials: user={'set' if pg_user else 'MISSING'}, "
+            f"token={'set' if pg_password else 'MISSING'}"
+        )
+
+    logger.info(f"Creating Lakebase connection: user={pg_user} host={lakebase_cfg.host}:{lakebase_cfg.port}")
     _conn = psycopg2.connect(
         user=pg_user,
         password=pg_password,
@@ -176,28 +237,27 @@ def _get_connection_sync():
         host=lakebase_cfg.host,
         port=lakebase_cfg.port,
         sslmode="require",
+        connect_timeout=15,
     )
     _conn.autocommit = True
-    logger.info("✅ Lakebase connection ready")
+    logger.info("Lakebase connection ready")
     return _conn
 
 
 async def get_conn():
-    """
-    Return a live connection, refreshing the OAuth token if needed.
-    Uses w.postgres.generate_database_credential() to obtain fresh tokens.
+    """Return a live connection, refreshing the OAuth token if needed.
+
+    Token lifecycle (M2M OAuth):
+      1. generate_database_credential() → short-lived PG token (~1 hr)
+      2. Auto-refresh 5 min before expiry
+      3. On auth failure: force token refresh + reconnect
     """
     global _conn
 
     async with _conn_lock:
         if _token_needs_refresh():
             logger.info("Lakebase token needs refresh...")
-            try:
-                await asyncio.to_thread(_refresh_token)
-            except Exception as e:
-                logger.warning(f"SDK token refresh failed: {e}")
-                # Fallback: use PGPASSWORD/PGUSER injected by Apps runtime
-                _use_injected_fallback()
+            await asyncio.to_thread(_refresh_token)
             # Close existing connection — it's using the old token
             await _close_conn()
 
@@ -205,6 +265,16 @@ async def get_conn():
         if _conn is None:
             try:
                 await asyncio.to_thread(_get_connection_sync)
+            except psycopg2.OperationalError as e:
+                err_msg = str(e).lower()
+                # Auth failure → force token refresh and retry once
+                if "password" in err_msg or "authentication" in err_msg:
+                    logger.warning(f"Auth failure on connect, forcing token refresh: {e}")
+                    _force_token_reset()
+                    await asyncio.to_thread(_refresh_token)
+                    await asyncio.to_thread(_get_connection_sync)
+                else:
+                    raise
             except Exception as e:
                 logger.error(f"Failed to create Lakebase connection: {e}")
                 _conn = None
@@ -252,15 +322,15 @@ def _pg_to_dbapi(sql: str) -> str:
     return re.sub(r'\$\d+', '%s', sql)
 
 
-_MAX_QUERY_RETRIES = 1  # retry once on stale connection
+_MAX_QUERY_RETRIES = 2  # retry twice: once for stale conn, once for expired token
 
 
 async def fetch_rows(sql: str, *args) -> List[Dict[str, Any]]:
     """Execute a query and return results as a list of JSON-safe dicts.
 
-    Retries once on psycopg2.InterfaceError or OperationalError (stale /
-    server-closed connection).  On retry the broken connection is discarded
-    and get_conn() transparently creates a fresh one.
+    Retries on psycopg2 errors with escalating recovery:
+      attempt 1 fail → discard connection, reconnect with same token
+      attempt 2 fail → force token refresh, reconnect with new token
     """
     last_err: Optional[Exception] = None
 
@@ -287,13 +357,18 @@ async def fetch_rows(sql: str, *args) -> List[Dict[str, Any]]:
             _reset_conn_sync()
 
             if attempt < _MAX_QUERY_RETRIES:
-                logger.info("Retrying with fresh connection...")
+                err_msg = str(e).lower()
+                # On auth/password errors, force a full token refresh
+                if "password" in err_msg or "authentication" in err_msg or attempt > 0:
+                    logger.info("Forcing token refresh before retry...")
+                    _force_token_reset()
+                else:
+                    logger.info("Retrying with fresh connection...")
                 continue
-            # All retries exhausted — raise the last error
+            # All retries exhausted
             logger.error(f"Lakebase query failed after {_MAX_QUERY_RETRIES + 1} attempts")
             raise
 
-    # Should not reach here, but satisfy type checker
     raise last_err  # type: ignore[misc]
 
 
