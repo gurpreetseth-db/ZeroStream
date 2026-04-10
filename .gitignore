@@ -41,6 +41,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+generated_config.env
 
 # Logs
 *.log
@@ -51,7 +52,3 @@ logs/
 
 # Jupyter
 .ipynb_checkpoints/
-.env
-generated_config.env
-.env
-generated_config.env

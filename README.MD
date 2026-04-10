@@ -94,13 +94,15 @@ Real-time IoT sensor data streaming demo using **Databricks ZeroBus** (gRPC) and
 
 Both apps connect to **Lakebase Autoscaling** using OAuth tokens generated via the Databricks SDK `w.postgres` API. This uses `psycopg2` as the PostgreSQL driver.
 
-### How It Works
+### How It Works (M2M OAuth)
 
 ```
-App starts → SDK generates OAuth token (1hr TTL)
-          → psycopg2 connection created with token as password
-          → Background refresh at 5min before expiry
-          → Connection recycled on token refresh
+Databricks Apps runtime injects DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
+  → WorkspaceClient() auto-authenticates as the app's service principal
+  → w.postgres.generate_database_credential() → short-lived PG token (~1hr)
+  → psycopg2 connects using SP client_id as PG username + token as password
+  → Auto-refresh 5 min before expiry
+  → On auth failure: force token refresh + reconnect (escalating retry)
 ```
 
 ### Token Generation (SDK API)
@@ -108,7 +110,7 @@ App starts → SDK generates OAuth token (1hr TTL)
 ```python
 from databricks.sdk import WorkspaceClient
 
-w = WorkspaceClient()
+w = WorkspaceClient()  # auto M2M OAuth in Apps runtime
 
 # Lakebase Autoscaling — uses w.postgres API
 cred = w.postgres.generate_database_credential(
@@ -124,14 +126,18 @@ token = cred.token  # 1-hour OAuth token
 ### Connection Pattern
 
 ```python
-import psycopg2
+import os, psycopg2
+
+# PG username = SP application_id (auto-injected as DATABRICKS_CLIENT_ID)
+pg_user = os.environ.get("DATABRICKS_CLIENT_ID")  # Apps runtime
+# Fallback for local dev: workspace user email
 
 conn = psycopg2.connect(
     host     = "ep-xxx.database.region.cloud.databricks.com",
     port     = 5432,
-    dbname   = "lakebaseprovisioned",
-    user     = "service-principal-email-or-client-id",
-    password = oauth_token,   # from SDK
+    dbname   = "databricks_postgres",
+    user     = pg_user,
+    password = oauth_token,   # from generate_database_credential()
     sslmode  = "require",
 )
 ```
@@ -280,17 +286,16 @@ bash infra/setup_infra.sh
 ```
 
 This script runs the following steps:
-1. Validate prerequisites (CLI, Python, SDK)
+1. Validate prerequisites (CLI, Python, SDK) and activate venv
 2. Initialize `generated_config.env` with base configuration
 3. Create SQL Warehouse (PRO, serverless, auto-stop)
 4. Create Databricks Apps (mobile + dashboard) with SP identities
 5. Create Delta tables (catalog, schema, table)
-6. Create Lakebase instance (auto-discovers host + endpoint)
-7. Create Lakebase SP OAuth roles + grant PG permissions
+6. Create Lakebase Autoscaling project (database, schema, table, indexes)
+7. Create Lakebase SP OAuth roles (`LAKEBASE_OAUTH_V1`) + grant PG permissions
 8. Create ZeroBus service principal + OAuth credentials
-9. Grant SQL Warehouse permissions to app SPs
-10. Generate `app.yaml` files for both apps
-11. Save all values to `generated_config.env`
+9. Grant SQL Warehouse + Unity Catalog permissions to app SPs
+10. Generate `app.yaml` files for both apps from `generated_config.env`
 
 ### 4. Deploy Applications
 
@@ -349,33 +354,33 @@ ZeroStream/
 ├── README.MD
 ├── requirements.txt        # Root dev dependencies
 │
-├── config/                 # Shared configuration
+├── config/                 # Shared configuration (deployed with both apps)
 │   ├── __init__.py
 │   └── settings.py         # Dataclass configs (Lakebase, Delta, ZeroBus, etc.)
 │
-├── infra/                  # Infrastructure setup (run once)
-│   ├── setup_infra.sh              # Orchestrator — runs all steps
-│   ├── create_warehouse.py         # SQL Warehouse (PRO, serverless)
-│   ├── create_apps.py              # Databricks Apps + SP identities
-│   ├── create_delta_tables.py      # Catalog, schema, Delta table
-│   ├── create_lakebase.py          # Lakebase Autoscaling project + database + table
-│   ├── create_sp_roles.py          # SP OAuth roles in Lakebase (LAKEBASE_OAUTH_V1)
-│   ├── grant_lakebase_sp_access.py # PG grants (CONNECT, USAGE, ALL PRIVILEGES)
-│   ├── create_zerobus_credentials.py # ZeroBus SP + OAuth secret
-│   ├── grant_permissions.py        # SQL Warehouse CAN_USE for app SPs
-│   └── generate_app_yaml.py        # Inject env vars into app.yaml files
+├── infra/                  # Infrastructure setup (run once via setup_infra.sh)
+│   ├── setup_infra.sh              # Orchestrator — runs all steps below in order
+│   ├── create_warehouse.py         # Step 3: SQL Warehouse (PRO, serverless)
+│   ├── create_apps.py              # Step 4: Databricks Apps + SP identities
+│   ├── create_delta_tables.py      # Step 5: Catalog, schema, Delta table
+│   ├── create_lakebase.py          # Step 6: Lakebase Autoscaling project + DB + table
+│   ├── create_sp_roles.py          # Step 7: SP OAuth roles (LAKEBASE_OAUTH_V1)
+│   ├── grant_lakebase_sp_access.py # Step 7: PG grants (CONNECT, USAGE, ALL PRIVILEGES)
+│   ├── create_zerobus_credentials.py # Step 8: ZeroBus SP + OAuth secret
+│   ├── grant_permissions.py        # Step 9: SQL Warehouse + UC permissions for app SPs
+│   └── generate_app_yaml.py        # Step 10: Inject env vars into app.yaml files
 │
-├── deployment/             # App deployment
-│   ├── deploy_all.sh
-│   ├── 00_setup_environment.sh
-│   ├── 03_deploy_apps.sh
-│   ├── install_dependencies.sh
-│   └── verify_setup.py
+├── deployment/             # App deployment (run via deploy_all.sh)
+│   ├── deploy_all.sh               # Orchestrator — validates, installs, deploys, verifies
+│   ├── 00_setup_environment.sh     # Step 1: Pre-deployment validation
+│   ├── install_dependencies.sh     # Step 2: Smart dependency installer
+│   ├── 03_deploy_apps.sh           # Step 3: Upload code + redeploy apps
+│   └── verify_setup.py             # Step 4: End-to-end verification
 │
-├── dashboard_app/          # Dashboard (Lakebase backend)
+├── dashboard_app/          # Dashboard (reads from Lakebase, M2M OAuth)
 │   ├── app.py              # FastAPI routes, WebSocket, lifespan
-│   ├── app.yaml            # Databricks App config (auto-generated)
-│   ├── lakebase_client.py  # psycopg2 + SDK OAuth token refresh
+│   ├── app.yaml            # Databricks App config (auto-generated by infra)
+│   ├── lakebase_client.py  # psycopg2 + M2M OAuth token refresh via DATABRICKS_CLIENT_ID
 │   ├── delta_client.py     # SQL Warehouse queries (test endpoint)
 │   ├── requirements.txt
 │   ├── wheels/             # Vendored: databricks-sdk 0.97.0, psycopg2-binary
@@ -388,9 +393,9 @@ ZeroStream/
 │       ├── dashboard.html      # Main dashboard page
 │       └── zerobus_view.html   # ZeroBus stream data page
 │
-└── mobile_app/             # Mobile Simulator
+└── mobile_app/             # Mobile Simulator (writes to Lakebase + ZeroBus)
     ├── app.py              # FastAPI routes, WebSocket, streaming loop
-    ├── app.yaml            # Databricks App config (auto-generated)
+    ├── app.yaml            # Databricks App config (auto-generated by infra)
     ├── data_generator.py   # Realistic random-walk sensor physics
     ├── zerobus_client.py   # ZeroBus publisher + Lakebase direct writer
     ├── requirements.txt
@@ -472,7 +477,14 @@ python3 deployment/verify_setup.py
 An oauth token was supplied but no role security label was configured
 ```
 **Cause**: Role created via raw SQL instead of SDK API, or `auth_method` not set to `LAKEBASE_OAUTH_V1`.
-**Fix**: Re-run `python3 infra/create_sp_roles.py` to create roles via `w.postgres.create_role()`. See [Lakebase Permissions](#lakebase-permissions--role-setup).
+**Fix**: Re-run `python3 infra/create_sp_roles.py` to create roles via `w.postgres.create_role()`, then `python3 infra/grant_lakebase_sp_access.py` for PG grants. See [Lakebase Permissions](#lakebase-permissions--role-setup).
+
+### Dashboard Can't Connect to Lakebase (M2M Auth)
+```
+Missing PG credentials: user=MISSING, token=MISSING
+```
+**Cause**: The app's service principal doesn't have a Lakebase OAuth role, or `DATABRICKS_CLIENT_ID` isn't available.
+**Fix**: Ensure `infra/setup_infra.sh` Step 7 completed successfully. The dashboard uses `DATABRICKS_CLIENT_ID` (auto-injected by Apps runtime) as the PG username — this must match the Lakebase role created by `create_sp_roles.py`.
 
 ### role_id Pattern Violation
 ```
