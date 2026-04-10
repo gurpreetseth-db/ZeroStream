@@ -15,8 +15,8 @@
 # Reads configuration from .env file:
 #   INFRA_PREFIX, WAREHOUSE_NAME, WAREHOUSE_CLUSTER_SIZE,
 #   MOBILE_APP_NAME, DASHBOARD_APP_NAME,
-#   LAKEBASE_INSTANCE, LAKEBASE_MIN_CAPACITY, LAKEBASE_MAX_CAPACITY,
-#   APP_COMPUTE_SIZE, ZEROBUS_TOPIC, ZEROBUS_SP_NAME
+#   LAKEBASE_INSTANCE, LAKEBASE_PG_VERSION, LAKEBASE_MIN_CAPACITY,
+#   LAKEBASE_MAX_CAPACITY, APP_COMPUTE_SIZE, ZEROBUS_TOPIC, ZEROBUS_SP_NAME
 # =============================================================================
 set -euo pipefail
 
@@ -73,7 +73,7 @@ echo -e "  Prefix           : ${CYAN}${INFRA_PREFIX:-not set}${RESET}"
 echo -e "  Warehouse        : ${CYAN}${WAREHOUSE_NAME:-not set}${RESET} (${WAREHOUSE_CLUSTER_SIZE:-Small})"
 echo -e "  Mobile App       : ${CYAN}${MOBILE_APP_NAME:-not set}${RESET}"
 echo -e "  Dashboard App    : ${CYAN}${DASHBOARD_APP_NAME:-not set}${RESET}"
-echo -e "  Lakebase         : ${CYAN}${LAKEBASE_INSTANCE:-not set}${RESET} (${LAKEBASE_MIN_CAPACITY:-0.5}-${LAKEBASE_MAX_CAPACITY:-8.0} CU, scale-to-zero: ${LAKEBASE_SCALE_TO_ZERO:-300}s)"
+echo -e "  Lakebase         : ${CYAN}${LAKEBASE_INSTANCE:-not set}${RESET} (PG ${LAKEBASE_PG_VERSION:-17}, ${LAKEBASE_MIN_CAPACITY:-0.5}-${LAKEBASE_MAX_CAPACITY:-8.0} CU, scale-to-zero: ${LAKEBASE_SCALE_TO_ZERO:-300}s)"
 echo -e "  App Compute      : ${CYAN}${APP_COMPUTE_SIZE:-MEDIUM}${RESET}"
 echo -e "  ZeroBus SP       : ${CYAN}${ZEROBUS_SP_NAME:-not set}${RESET}"
 echo -e "  ZeroBus Topic    : ${CYAN}${ZEROBUS_TOPIC:-not set}${RESET}"
@@ -145,6 +145,7 @@ CONFIG_FILE="${ROOT_DIR}/generated_config.env"
     echo "LAKEBASE_DATABASES=${LAKEBASE_DATABASES:-}"
     echo "LAKEBASE_SCHEMA=${LAKEBASE_SCHEMA:-}"
     echo "LAKEBASE_PORT=${LAKEBASE_PORT:-}"
+    echo "LAKEBASE_PG_VERSION=${LAKEBASE_PG_VERSION:-17}"
     echo "LAKEBASE_MIN_CAPACITY=${LAKEBASE_MIN_CAPACITY:-0.5}"
     echo "LAKEBASE_MAX_CAPACITY=${LAKEBASE_MAX_CAPACITY:-8.0}"
     echo "LAKEBASE_SCALE_TO_ZERO=${LAKEBASE_SCALE_TO_ZERO:-300}"
