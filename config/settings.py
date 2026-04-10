@@ -93,6 +93,9 @@ class LakebaseConfig:
     endpoint:               str = field(default_factory=lambda: os.environ.get("LAKEBASE_ENDPOINT", ""))
     active_window_seconds:  int = field(default_factory=lambda: int(os.environ.get("ACTIVE_WINDOW_SECONDS", "5")))
     
+    # PostgreSQL version (supported: 16, 17)
+    pg_version:             str = field(default_factory=lambda: os.environ.get("LAKEBASE_PG_VERSION", "17"))
+    
     # Autoscaling capacity settings
     min_capacity:           float = field(default_factory=lambda: float(os.environ.get("LAKEBASE_MIN_CAPACITY", "0.5")))
     max_capacity:           float = field(default_factory=lambda: float(os.environ.get("LAKEBASE_MAX_CAPACITY", "8.0")))
@@ -180,6 +183,7 @@ def print_config():
     print(f"  Lakebase Schema     : {lakebase_cfg.schema}")
     print(f"  Lakebase Project    : {lakebase_cfg.instance}")
     print(f"  Lakebase Endpoint   : {lakebase_cfg.endpoint}")
+    print(f"  Lakebase PG Version : {lakebase_cfg.pg_version}")
     print(f"  Lakebase Min CU     : {lakebase_cfg.min_capacity}")
     print(f"  Lakebase Max CU     : {lakebase_cfg.max_capacity}")
     print(f"  Lakebase ScaleToZero: {lakebase_cfg.scale_to_zero} min")

@@ -14,6 +14,7 @@ Reads from environment variables:
 - LAKEBASE_MIN_CAPACITY: Minimum autoscaling CU (e.g. 8.0)
 - LAKEBASE_MAX_CAPACITY: Maximum autoscaling CU (e.g. 16.0)
 - LAKEBASE_SCALE_TO_ZERO: Minutes of inactivity before scale-to-zero
+- LAKEBASE_PG_VERSION: PostgreSQL version (default: 17, supported: 16, 17)
 - TABLE_NAME: Table name to create in Lakebase
 
 Uses Databricks SDK w.postgres API for Lakebase Autoscaling.
@@ -23,6 +24,10 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# Supported Lakebase Postgres versions (update when new versions are available)
+SUPPORTED_PG_VERSIONS = ["16", "17"]
+DEFAULT_PG_VERSION = "17"
 
 
 def _ensure_postgres_sdk():
@@ -72,7 +77,7 @@ def get_workspace_client():
     return WorkspaceClient(host=host, token=token)
 
 
-def get_or_create_project(w, project_id: str, display_name: str) -> dict:
+def get_or_create_project(w, project_id: str, display_name: str, pg_version: str) -> dict:
     """Create or get a Lakebase Autoscaling project."""
     from databricks.sdk.service.postgres import Project, ProjectSpec
 
@@ -80,19 +85,24 @@ def get_or_create_project(w, project_id: str, display_name: str) -> dict:
     try:
         existing = w.postgres.get_project(name=f"projects/{project_id}")
         if existing:
-            print(f"  ℹ️  Project '{project_id}' already exists")
+            existing_ver = getattr(getattr(existing, "spec", None), "pg_version", None)
+            print(f"  ℹ️  Project '{project_id}' already exists (PG version: {existing_ver})")
+            if existing_ver and existing_ver != pg_version:
+                print(f"  ⚠️  Existing project uses PG {existing_ver}, requested PG {pg_version}")
+                print(f"     PG version cannot be changed after project creation.")
             return existing
     except Exception:
         pass  # Project doesn't exist, create it
 
     print(f"  🗄️  Creating Lakebase Autoscaling project: {project_id}")
     print(f"     Display Name: {display_name}")
+    print(f"     PG Version:   {pg_version}")
 
     operation = w.postgres.create_project(
         project=Project(
             spec=ProjectSpec(
                 display_name=display_name,
-                pg_version="17",
+                pg_version=pg_version,
             )
         ),
         project_id=project_id,
@@ -100,7 +110,7 @@ def get_or_create_project(w, project_id: str, display_name: str) -> dict:
 
     print(f"     Waiting for project to be ready...")
     result = operation.wait()
-    print(f"  ✅ Project created: {result.name}")
+    print(f"  ✅ Project created: {result.name} (PG {pg_version})")
     return result
 
 
@@ -318,9 +328,16 @@ def main():
         min_cu = float(os.environ.get("LAKEBASE_MIN_CAPACITY", "0.5"))
         max_cu = float(os.environ.get("LAKEBASE_MAX_CAPACITY", "8.0"))
         scale_to_zero = int(os.environ.get("LAKEBASE_SCALE_TO_ZERO", "5"))
+        pg_version = os.environ.get("LAKEBASE_PG_VERSION", DEFAULT_PG_VERSION).strip()
+
+        # Validate PG version
+        if pg_version not in SUPPORTED_PG_VERSIONS:
+            print(f"  ❌ Unsupported PG version '{pg_version}'. Supported: {', '.join(SUPPORTED_PG_VERSIONS)}")
+            sys.exit(1)
 
         print(f"\n  Lakebase Autoscaling Configuration:")
         print(f"     Project ID     : {project_id}")
+        print(f"     PG Version     : {pg_version}")
         print(f"     Min Capacity   : {min_cu} CU")
         print(f"     Max Capacity   : {max_cu} CU")
         print(f"     Scale-to-Zero  : {scale_to_zero} minutes")
@@ -328,7 +345,7 @@ def main():
         w = get_workspace_client()
 
         # Step 1: Create or get project
-        project = get_or_create_project(w, project_id, f"ZeroStream - {project_id}")
+        project = get_or_create_project(w, project_id, f"ZeroStream - {project_id}", pg_version)
 
         # Step 2: Configure endpoint with autoscaling
         endpoint_name, host = configure_endpoint(w, project_id, min_cu, max_cu, scale_to_zero)
